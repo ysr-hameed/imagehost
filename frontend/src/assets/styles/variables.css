@@ -1,0 +1,106 @@
+:root {
+  --font-main: 'Poppins', sans-serif;
+  --primary: #000000;
+  --primary-hover: #212837;
+
+  /* Text colors */
+  --text: #1f2937;
+  --text-muted:#ececec;
+  --text-inverse: #ffffff;
+  --white: #ffffff;
+  /* Backgrounds */
+  --bg: #ffffff;
+  --bg-hover: #f6f6f6;
+  --bg-secondary: #f0f0f0;
+  --bg-card: #ffffff;
+  --bg-overlay: rgba(0, 0, 0, 0.5);
+  --color-secondary: #d5d2fe;
+  /* Border */
+  --border: #e5e7eb;
+  --radius : 8px;
+  /* Button */
+  --btn-bg: var(--primary);
+  --btn-text: #ffffff;
+  --btn-hover: #2563eb;
+  --backdrop: rgba(0, 0, 0, 0.4);
+  /* Modal */
+  --modal-bg: #ffffff;
+
+  /* Avatar */
+  --avatar-bg: #e0e7ff;
+  --link-color: #8d86f2;
+  /* Misc */
+  --danger: #ef4444;
+  --success: #10b981;
+  --warning: #f59e0b;
+}
+
+.dark {
+  --primary: #0e8aa3;
+  --primary-hover: ##0f9bb7;
+  --text: #f3f4f6;
+  --text-muted: #9ca3af;
+  --text-inverse: #000000;
+  --bg-hover: #212837;
+  --bg: #111827;
+  
+  
+  
+  --bg-secondary: #1f2937;
+  --bg-card: #1f2937;
+  --bg-overlay: rgba(255, 255, 255, 0.1);
+
+  --border: #374151;
+
+  --btn-bg: var(--primary);
+  --btn-text: #ffffff;
+  --btn-hover: #60a5fa;
+
+  --modal-bg: #1f2937;
+
+  --avatar-bg: #334155;
+
+  --danger: #f87171;
+  --success: #34d399;
+  --warning: #fbbf24;
+}
+* {
+  font-family: var(--font-main);
+  -webkit-tap-highlight-color: transparent;
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg);
+  color: var(--text);
+  overflow-x: hidden;
+  max-width: 100%;
+}
+
+h2,p {
+  margin: 0;
+  padding: 0;
+}
+.btn{
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  padding : 0.3rem 1rem;
+  height: 40px;
+}
+.btn-primary{
+  background: var(--primary);
+  color: var(--white);
+}
+.btn-secondary{
+  background: none;
+  border: 1px solid var(--text);
+  border-radius: var(--radius);
+  color: var(--text);
+}
+.modal-btn{
+  width: 125px;
+}

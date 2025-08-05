@@ -4,15 +4,14 @@ import cookie from '@fastify/cookie'
 import rateLimit from '@fastify/rate-limit'
 import dotenv from 'dotenv'
 
-import db from './plugins/db.js'
-import jwt from './plugins/jwt.js'
+import db from './src/plugins/db.js'
+import jwt from './src/plugins/jwt.js'
 
-import authRoutes from './routes/auth.js'
+import authRoutes from './src/routes/auth.js'
 
-import settingsRoutes from './routes/settings.js'
-import adminRoutes from './plugins/admin.js'
-import notifications from './routes/notifications.js'
-
+import settingsRoutes from './src/routes/settings.js'
+import adminRoutes from './src/plugins/admin.js'
+import notifications from './src/routes/notifications.js'
 
 
 dotenv.config()

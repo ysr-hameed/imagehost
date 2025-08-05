@@ -82,17 +82,44 @@ export default async function (fastify, opts) {
 })
   // ✅ VERIFY EMAIL
   fastify.get('/verify-email', async (req, reply) => {
-    const { token } = req.query
-    if (!token) return reply.code(400).send({ error: 'Missing token' })
+  const { token } = req.query
+
+  if (!token) {
+    fastify.log.warn("Missing token")
+    return reply.code(400).send({ error: 'Missing token' })
+  }
+
+  fastify.log.info({ token }, "Verifying token")
+
+  try {
+    const check = await fastify.pg.query(
+      `SELECT id, is_verified FROM users WHERE verification_token = $1`,
+      [token]
+    )
+
+    if (!check.rows.length) {
+      fastify.log.warn("No user found with that token")
+      return reply.code(400).send({ error: 'Invalid or expired token' })
+    }
 
     const result = await fastify.pg.query(`
-      UPDATE users SET is_verified=true, verification_token=NULL
-      WHERE verification_token=$1 RETURNING id
+      UPDATE users
+      SET is_verified = true, verification_token = NULL
+      WHERE verification_token = $1
+      RETURNING id
     `, [token])
 
-    if (result.rowCount === 0) return reply.code(400).send({ error: 'Invalid or expired token' })
-    reply.send({ message: 'Email verified successfully' })
-  })
+    if (result.rowCount === 0) {
+      fastify.log.warn("Update failed, token might already be used")
+      return reply.code(400).send({ error: 'Token invalid or already used' })
+    }
+
+    return reply.send({ message: 'Email verified successfully' })
+  } catch (err) {
+    fastify.log.error(err, "Error during email verification")
+    reply.code(500).send({ error: 'Server error' })
+  }
+})
 
   // 🔁 RESEND VERIFICATION
   fastify.post('/resend-verification', {

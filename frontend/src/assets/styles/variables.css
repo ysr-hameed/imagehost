@@ -104,3 +104,6 @@ h2,p {
 .modal-btn{
   width: 125px;
 }
+a{
+  color: var(--link-color);
+}

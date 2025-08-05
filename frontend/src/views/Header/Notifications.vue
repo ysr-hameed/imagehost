@@ -20,27 +20,26 @@
         v-for="n in notifications"
         :key="n.id"
         class="chat-item"
-        @click="selectNotification(n)"
+        @click="openInNewPage(n)"
       >
         <div class="content">
-          <strong class="title">{{ n.title }}</strong>
-          <p class="preview">{{ truncate(n.message, 80) }}</p>
+          <div class="title-row">
+            <strong class="title">{{ n.title }}</strong>
+            <button class="read-btn icon-only" @click.stop="markAsRead(n)">
+              <Check class="icon-sm" />
+            </button>
+          </div>
+          <p class="preview">{{ truncate(n.message, 100) }}</p>
           <div class="meta">
             <span class="time">{{ formatTime(n.created_at) }}</span>
-            <button class="read-btn" @click.stop="markAsRead(n)">
-              <Check class="icon" /> Mark Read
-            </button>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Detail View -->
+    <!-- Detail View (if opened directly) -->
     <div v-else class="detail">
       <div class="detail-header">
-        <button class="back-btn" @click="goBack">
-          <ArrowLeft class="icon" />
-        </button>
         <button class="read-btn" @click="markAsRead(selected)">
           <Check class="icon" /> Mark Read
         </button>
@@ -58,14 +57,16 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { formatDistanceToNow } from 'date-fns'
-import { ArrowLeft, Check } from 'lucide-vue-next'
+import { Check } from 'lucide-vue-next'
 import { fetchNotifications, markNotificationRead } from '@/api/notifications'
-import Loader from '@/components/global/Loader.vue' // ✅ Loader component
+import Loader from '@/components/global/Loader.vue'
 
 const notifications = ref([])
 const selected = ref(null)
-const loading = ref(true) // ✅ Add loading state
+const loading = ref(true)
+const router = useRouter()
 
 const loadNotifications = async () => {
   try {
@@ -75,7 +76,7 @@ const loadNotifications = async () => {
     console.error('Failed to fetch notifications:', err)
     window.$toast('Failed to load notifications', 'error')
   } finally {
-    loading.value = false // ✅ Set loading false
+    loading.value = false
   }
 }
 
@@ -86,21 +87,10 @@ const formatTime = (iso) => {
 const truncate = (text, len = 100) =>
   text.length > len ? text.substring(0, len) + '...' : text
 
-const selectNotification = (n) => {
-  selected.value = n
-  history.pushState(null, null, location.href)
-  window.addEventListener('popstate', goBack)
-}
-
-const goBack = () => {
-  selected.value = null
-  window.removeEventListener('popstate', goBack)
-}
-
 const markAsRead = async (n) => {
   await markNotificationRead(n.id)
   notifications.value = notifications.value.filter((item) => item.id !== n.id)
-  if (selected.value?.id === n.id) goBack()
+  if (selected.value?.id === n.id) selected.value = null
 }
 
 const markAllAsRead = async () => {
@@ -110,16 +100,19 @@ const markAllAsRead = async () => {
   notifications.value = []
 }
 
+const openInNewPage = (n) => {
+  router.push(`/notifications/${n.id}`) // 🔁 Ensure you have a route like this
+}
+
 onMounted(loadNotifications)
 </script>
 
 <style scoped>
-.notification-wrapper {
+  .notification-wrapper {
   width: 100%;
-  margin: 0;
   display: flex;
-  flex-direction : column;
-  align-items:start;
+  flex-direction: column;
+  align-items: start;
   background: var(--bg);
 }
 
@@ -127,13 +120,12 @@ onMounted(loadNotifications)
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 0;
 }
 
 .notifications-header h2 {
   font-size: 1.4rem;
   font-weight: 600;
-  margin:0;
+  margin: 0;
 }
 
 .read-btn {
@@ -153,9 +145,18 @@ onMounted(loadNotifications)
   background: var(--primary-hover);
 }
 
+.read-btn.icon-only {
+  padding: 4px;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.read-btn.icon-only:hover {
+  color: var(--text);
+}
+
 .chat-item {
   display: flex;
-  align-items: flex-start;
   padding: 12px 0;
   border-bottom: 1px solid var(--border);
   cursor: pointer;
@@ -168,15 +169,23 @@ onMounted(loadNotifications)
   gap: 4px;
 }
 
+.title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
 .title {
   font-size: 0.95rem;
   font-weight: 600;
-  color: var(--text);
+  color: var(--text-color);
+  margin: 0;
+  padding: 0;
 }
 
 .preview {
   font-size: 0.9rem;
-  color: var(--text-muted);
+  color: var(--text-color);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -191,16 +200,13 @@ onMounted(loadNotifications)
   margin-top: 4px;
 }
 
-
-
 .detail {
   padding-top: 8px;
 }
 
 .detail-header {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  justify-content: flex-end;
   margin-bottom: 12px;
 }
 
@@ -208,19 +214,7 @@ onMounted(loadNotifications)
   font-size: 1.25rem;
   font-weight: 600;
   text-align: center;
-  margin-bottom: 12px;
-}
-
-
-.back-btn {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.back-btn:hover {
-  color: var(--text);
+  margin: 0 0 12px 0;
 }
 
 .message {
@@ -230,20 +224,21 @@ onMounted(loadNotifications)
 
 .message p {
   font-size: 1rem;
-  color: var(--text);
+  color: var(--text-color);
   text-align: left;
+  margin: 0;
 }
 
 .time {
   font-size: 0.75rem;
-  color: var(--text-muted);
+  color: var(--text-color);
   margin-top: 10px;
 }
 
 .empty {
   text-align: center;
   font-size: 0.9rem;
-  color: var(--text);
+  color: var(--text-color);
   padding: 5px 0;
 }
 
@@ -253,8 +248,9 @@ onMounted(loadNotifications)
 }
 
 .icon-sm {
-  width:15px;
+  width: 15px;
   height: 15px;
-  margin:auto;
+  margin: auto;
 }
+
 </style>

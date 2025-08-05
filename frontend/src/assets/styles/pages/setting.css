@@ -1,0 +1,56 @@
+.settings-container {
+  padding: 0rem;
+  font-family: var(--font-main);
+  color: var(--text);
+}
+
+.settings-title {
+  font-size: 1.5rem;
+  margin-top: 0;
+  margin-bottom: 1.5rem;
+  font-weight: 600;
+}
+
+.settings-grid {
+  display: grid;
+  gap: 1rem;
+  padding: 0;
+}
+
+@media (min-width: 768px) {
+  .settings-grid {
+    padding: 0 2rem;
+  }
+}
+
+.settings-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 1rem;
+}
+
+.settings-item.danger {
+  color: var(--red);
+}
+
+.label-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 500;
+}
+
+.icon {
+  color: var(--primary);
+  width: 20px;
+  height: 20px;
+}
+
+.select {
+  min-width: 150px;
+  max-width: 200px;
+}
+
+

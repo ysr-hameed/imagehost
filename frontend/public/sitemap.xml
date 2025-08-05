@@ -6,31 +6,31 @@
                       http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd">
 
   <url>
-    <loc>https://servoro.com/</loc>
+    <loc>http://localhost:5173/</loc>
     <priority>1.00</priority>
     <changefreq>daily</changefreq>
   </url>
 
   <url>
-    <loc>https://servoro.com/dashboard</loc>
+    <loc>http://localhost:5173/dashboard</loc>
     <priority>0.90</priority>
     <changefreq>weekly</changefreq>
   </url>
 
   <url>
-    <loc>https://servoro.com/profile</loc>
+    <loc>http://localhost:5173/profile</loc>
     <priority>0.80</priority>
     <changefreq>monthly</changefreq>
   </url>
 
   <url>
-    <loc>https://servoro.com/settings</loc>
+    <loc>http://localhost:5173/settings</loc>
     <priority>0.70</priority>
     <changefreq>monthly</changefreq>
   </url>
 
   <url>
-    <loc>https://servoro.com/login</loc>
+    <loc>http://localhost:5173/login</loc>
     <priority>0.60</priority>
     <changefreq>yearly</changefreq>
   </url>

@@ -30,10 +30,16 @@ const routes = [
   component: () => import('@/views/Header/Notifications.vue'),
   meta: { layout: 'default',title: 'Notifications' }
 },
+{
+  path: '/notifications/:id',
+  name: 'NotificationDetail',
+  component: () => import('@/views/Header/NotificationDetailView.vue'),
+  meta: { layout: 'default',title: 'Notifications' }
+},
   {
     path: '/settings',
     name: 'Settings',
-    component: () => import('@/views/Profile/Settings.vue'),
+    component: () => import('@/views/Header/Settings.vue'),
     meta: {
       layout: 'default',
       requiresAuth: true,

@@ -34,7 +34,7 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import Sidebar from '@/components/AdminSidebar.vue'
 import Header from '@/components/Header.vue'
-import '@/assets/styles/layout/default-admin-layout.css'
+import '@/assets/styles/layout/default_and_admin_layout.css'
 
 const sidebarCollapsed = ref(true)
 const mobileOpen = ref(false)

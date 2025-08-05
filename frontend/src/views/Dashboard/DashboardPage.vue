@@ -16,7 +16,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { user, loadUser } from '@/stores/user' // ✅ from store
+import { user, loadUser } from '@/stores/user' 
 import Loader from '@/components/global/Loader.vue'
 
 const loading = ref(true)

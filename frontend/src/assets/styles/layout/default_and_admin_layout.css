@@ -1,0 +1,32 @@
+.layout {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding-top: 64px; /* height of the header */
+  overflow-x: hidden;
+}
+
+.page-content {
+  flex: 1;
+  padding-left: 1rem;
+  padding-right: 1rem;
+  padding-block: 1rem;
+  min-height: calc(100vh - 64px); /* header height */
+  overflow-x: hidden;
+}
+
+@media (max-width: 767px) {
+  .page-content {
+    padding-left: 1rem;
+    padding-right: 1rem;
+    margin-left: 0 !important;
+  }
+}

@@ -24,11 +24,11 @@
           <span>Change Password</span>
         </div>
         <button
-          class="btn"
+          class="btn btn-primary small-btn"
           @click="openPasswordModal = true"
           :disabled="resetTimer > 0"
         >
-          {{ resetTimer > 0 ? `Try again in ${resetTimer}s` : 'Change' }}
+          {{ resetTimer > 0 ? ` ${resetTimer}s` : 'Change' }}
         </button>
       </div>
 
@@ -38,7 +38,7 @@
           <Trash2 class="icon" />
           <span>Delete Account</span>
         </div>
-        <button class="btn danger" @click="openDeleteModal = true">Delete</button>
+        <button class="btn btn-danger small-btn" @click="openDeleteModal = true">Delete</button>
       </div>
     </div>
 
@@ -72,6 +72,7 @@ import BaseModal from '@/components/BaseModal.vue'
 import { applyTheme } from '@/utils/theme'
 import { forgotPassword } from '@/api/user'
 import { user } from '@/stores/user'
+import '@/assets/styles/pages/setting.css'
 
 const selectedTheme = ref('system')
 const openPasswordModal = ref(false)
@@ -136,87 +137,3 @@ async function handlePasswordReset() {
   }
 }
 </script>
-
-<style scoped>
-.settings-container {
-  padding: 0rem;
-  font-family: var(--font-main);
-  color: var(--text);
-}
-
-.settings-title {
-  font-size: 1.5rem;
-  margin-bottom: 1.5rem;
-  font-weight: 600;
-}
-
-.settings-grid {
-  display: grid;
-  gap: 1rem;
-  padding: 0;
-}
-
-@media (min-width: 768px) {
-  .settings-grid {
-    padding: 0 2rem;
-  }
-}
-
-.settings-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 1rem;
-}
-
-.settings-item.danger {
-  color: var(--red);
-}
-
-.label-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-weight: 500;
-}
-
-.icon {
-  color: var(--primary);
-  width: 20px;
-  height: 20px;
-}
-
-.select {
-  min-width: 150px;
-  max-width: 200px;
-}
-
-.btn {
-  padding: 0.5rem 1rem;
-  background: var(--primary);
-  color: var(--white);
-  border-radius: 0.5rem;
-  font-weight: 500;
-  border: none;
-  transition: 0.3s;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.btn[disabled] {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.btn.outline {
-  background: transparent;
-  color: var(--text);
-  border: 1px solid var(--border);
-}
-
-.btn.danger {
-  background: #dc2626;
-}
-</style>

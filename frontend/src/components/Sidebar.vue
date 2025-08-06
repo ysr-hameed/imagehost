@@ -7,10 +7,10 @@
         <span v-if="!collapsed">Dashboard</span>
       </router-link>
 
-      <router-link to="/profile" @click="handleLinkClick">
-        <User :size="20" />
-        <span v-if="!collapsed">Profile</span>
-      </router-link>
+<router-link to="/api_key" @click="handleLinkClick">
+  <KeyRound :size="20" />
+  <span v-if="!collapsed">API Key</span>
+</router-link>
 
       <router-link to="/explore" @click="handleLinkClick">
         <CompassIcon :size="20" />
@@ -53,6 +53,7 @@ import {
   CompassIcon,
   ChevronLeft,
   ChevronRight,
+  KeyRound,
   X
 } from 'lucide-vue-next'
 import { ref, onMounted } from 'vue'

@@ -33,7 +33,7 @@
 import { ref } from 'vue'
 import { Mail } from 'lucide-vue-next'
 import ButtonLoader from '@/components/ButtonLoader.vue'
-import '@/assets/styles/auth/index.css'
+import '@/assets/styles/pages/auth.css'
 import axios from 'axios'
 
 const email = ref('')

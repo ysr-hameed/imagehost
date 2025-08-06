@@ -61,7 +61,7 @@ import { useRouter } from 'vue-router'
 import { formatDistanceToNow } from 'date-fns'
 import { Check } from 'lucide-vue-next'
 import { fetchNotifications, markNotificationRead } from '@/api/notifications'
-import Loader from '@/components/global/Loader.vue'
+import Loader from '@/components/Loader.vue'
 
 const notifications = ref([])
 const selected = ref(null)

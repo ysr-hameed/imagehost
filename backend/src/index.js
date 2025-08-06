@@ -8,10 +8,12 @@ import db from './plugins/db.js'
 import jwt from './plugins/jwt.js'
 
 import authRoutes from './routes/auth.js'
-
 import settingsRoutes from './routes/settings.js'
 import adminRoutes from './plugins/admin.js'
 import notifications from './routes/notifications.js'
+import apiAuth from './plugins/api-auth.js'
+import apiKeys from './routes/me/api-keys.js'
+
 
 
 dotenv.config()
@@ -52,7 +54,8 @@ async function start() {
   await fastify.register(adminRoutes)
   await fastify.register(settingsRoutes, { prefix: '/api' })
   await fastify.register(notifications)
-  
+  await fastify.register(apiAuth)
+await fastify.register(apiKeys)
   fastify.get('/ping', async () => ({
     status: 'ok',
     time: new Date().toISOString()

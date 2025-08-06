@@ -31,7 +31,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Mail } from 'lucide-vue-next'
 import ButtonLoader from '@/components/ButtonLoader.vue'
-import '@/assets/styles/auth/index.css'
+import '@/assets/styles/pages/auth.css'
 import { forgotPassword } from '@/api/user.js' // ✅ Import only needed function
 
 const email = ref('')

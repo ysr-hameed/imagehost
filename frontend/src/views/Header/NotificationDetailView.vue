@@ -40,7 +40,7 @@ import { ref, onMounted } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { formatDistanceToNow } from 'date-fns'
 import { fetchNotifications, markNotificationRead } from '@/api/notifications'
-import Loader from '@/components/global/Loader.vue'
+import Loader from '@/components/Loader.vue'
 import { ArrowLeft, Check } from 'lucide-vue-next'
 
 const notification = ref(null)

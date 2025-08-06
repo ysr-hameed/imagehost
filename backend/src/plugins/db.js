@@ -43,7 +43,15 @@ export default fp(async function (fastify, opts) {
       created_at TIMESTAMP DEFAULT now()
     );
   `)
-
+await pool.query(`
+CREATE TABLE IF NOT EXISTS api_keys (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  key TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+`)
   // ✅ App Settings Table
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app_settings (

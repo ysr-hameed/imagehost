@@ -77,7 +77,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { Mail, Lock, Eye, EyeOff, Github } from 'lucide-vue-next'
 import ButtonLoader from '@/components/ButtonLoader.vue'
-import '@/assets/styles/auth/index.css'
+import '@/assets/styles/pages/auth.css'
 import { login, resendVerification } from '@/api/user.js'
 import { loadUser } from '@/stores/user'
 

@@ -128,8 +128,8 @@ import { useRouter } from 'vue-router'
 import { getCurrentUser } from '@/api/user.js'
 
 import { appSettings } from '@/stores/settings'
-import '@/assets/styles/landing-page/index.css'
-import Loader from '@/components/global/Loader.vue' // ✅ Your global loader
+import '@/assets/styles/pages/landing_page.css'
+import Loader from '@/components/Loader.vue' // ✅ Your global loader
 
 // ✅ Local state
 const router = useRouter()

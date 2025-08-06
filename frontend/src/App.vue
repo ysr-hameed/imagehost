@@ -16,7 +16,7 @@ import { appSettings } from '@/stores/settings'
 
 import DefaultLayout from '@/layouts/DefaultLayout.vue'
 import Toast from '@/components/Toast.vue'
-import Loader from '@/components/global/Loader.vue'
+import Loader from '@/components/Loader.vue'
 
 const route = useRoute()
 const toastRef = ref(null)

@@ -24,11 +24,24 @@ const routes = [
       description: 'Manage your activity and Startups.'
     }
   },
+  
+    {
+    path: '/api_key',
+    name: 'API',
+    component: () => import('@/views/Route_Pages/Api_Key.vue'),
+    meta: {
+      layout: 'default',
+      requiresAuth: true,
+      title: 'Dashboard',
+      description: 'Manage your activity and Startups.'
+    }
+  },
+  
  {
   path: '/notifications',
   name: 'Notifications',
   component: () => import('@/views/Header/Notifications.vue'),
-  meta: { layout: 'default',title: 'Notifications' }
+  meta: { layout: 'default',title: 'Notifications',requiresAuth: true }
 },
 {
   path: '/notifications/:id',

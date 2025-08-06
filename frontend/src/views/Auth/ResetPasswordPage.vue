@@ -57,7 +57,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { Lock, Eye, EyeOff } from 'lucide-vue-next'
 import ButtonLoader from '@/components/ButtonLoader.vue'
 import axios from 'axios'
-import '@/assets/styles/auth/index.css'
+import '@/assets/styles/pages/auth.css'
 
 const API = import.meta.env.VITE_API_BASE_URL
 

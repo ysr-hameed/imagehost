@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID REFERENCES users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
+  revoked BOOLEAN DEFAULT FALSE,
   key TEXT NOT NULL,
   created_at TIMESTAMP DEFAULT NOW()
 );

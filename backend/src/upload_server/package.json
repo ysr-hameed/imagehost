@@ -1,0 +1,31 @@
+{
+  "name": "upload_server",
+  "version": "1.0.0",
+  "main": "src/index.js",
+  "type": "CommonJS",
+  "scripts": {
+    "dev": "node src/server.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.859.0",
+    "@fastify/multipart": "^9.0.3",
+    "@fastify/postgres": "^6.0.2",
+    "axios": "^1.11.0",
+    "backblaze-b2": "^1.7.1",
+    "dotenv": "^17.2.1",
+    "fastify": "^5.4.0",
+    "fastify-multer": "^2.0.3",
+    "fastify-multipart": "^5.3.1",
+    "fastify-postgres": "^3.6.0",
+    "form-data": "^4.0.4",
+    "fs": "^0.0.1-security",
+    "fs-extra": "^11.3.1",
+    "mime-types": "^3.0.1",
+    "mkdirp": "^3.0.1",
+    "nanoid": "^5.1.5",
+    "path": "^0.12.7",
+    "pg": "^8.16.3",
+    "sharp": "^0.34.3",
+    "uuid": "^11.1.0"
+  }
+}

@@ -26,30 +26,32 @@ export default fp(async function (fastify, opts) {
   // ✅ Users Table
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
-      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-      first_name TEXT NOT NULL,
-      last_name TEXT,
-      username TEXT UNIQUE NOT NULL,
-      email TEXT UNIQUE NOT NULL,
-      password TEXT,
-      provider TEXT NOT NULL DEFAULT 'form',
-      is_admin BOOLEAN DEFAULT false,
-      is_verified BOOLEAN DEFAULT false,
-      is_blocked BOOLEAN DEFAULT false,
-      verification_token TEXT,
-      reset_token TEXT,
-      reset_token_expires TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      created_at TIMESTAMP DEFAULT now()
-    );
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  first_name TEXT NOT NULL,
+  last_name TEXT,
+  username TEXT UNIQUE NOT NULL,
+  email TEXT UNIQUE NOT NULL,
+  password TEXT,
+  provider TEXT NOT NULL DEFAULT 'form',
+  is_admin BOOLEAN DEFAULT false,
+  is_verified BOOLEAN DEFAULT false,
+  is_blocked BOOLEAN DEFAULT false,
+  verification_token TEXT,
+  reset_token TEXT,
+  reset_token_expires TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  created_at TIMESTAMP DEFAULT now(),
+  custom_domain TEXT,
+  images JSONB DEFAULT '[]'
+);
   `)
 await pool.query(`
 CREATE TABLE IF NOT EXISTS api_keys (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID REFERENCES users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
-  revoked BOOLEAN DEFAULT FALSE,
-  key TEXT NOT NULL,
+  key TEXT NOT NULL UNIQUE,
+  enabled BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMP DEFAULT NOW()
 );
 `)

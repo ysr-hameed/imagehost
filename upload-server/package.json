@@ -1,0 +1,22 @@
+{
+  "name": "upload-server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "nodemon index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@fastify/multipart": "^9.0.3",
+    "axios": "^1.11.0",
+    "dotenv": "^17.2.1",
+    "fastify": "^5.4.0",
+    "fastify-multer": "^2.0.3",
+    "form-data": "^4.0.4",
+    "nodemon": "^3.1.10"
+  }
+}

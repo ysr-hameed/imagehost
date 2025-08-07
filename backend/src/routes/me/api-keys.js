@@ -64,4 +64,30 @@ export default async function apiKeyRoutes(fastify) {
     if (rowCount === 0) return reply.code(404).send({ error: 'Key not found' })
     return { success: true }
   })
+  
+  
+  
+// ✅ Toggle API key (enable/disable)
+fastify.post('/me/api-keys/:id/toggle', async (req, reply) => {
+  const { id } = req.params
+  const userId = req.user.id
+
+  // Check ownership
+  const { rows } = await fastify.pg.query(
+    'SELECT enabled FROM api_keys WHERE id = $1 AND user_id = $2',
+    [id, userId]
+  )
+  if (!rows[0]) return reply.code(404).send({ error: 'Key not found' })
+
+  const newState = !rows[0].enabled
+
+  const { rows: updated } = await fastify.pg.query(
+    'UPDATE api_keys SET enabled = $1 WHERE id = $2 RETURNING id, name, key, enabled, created_at',
+    [newState, id]
+  )
+
+  return updated[0]
+})
+
+
 }

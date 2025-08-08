@@ -1,78 +1,93 @@
 const axios = require('axios');
+const crypto = require('crypto');
+const path = require('path');
 require('dotenv').config();
 
-let b2Data = null;
+const {
+  B2_KEY_ID,
+  B2_APP_KEY,
+  B2_BUCKET_ID,
+  B2_BUCKET_NAME,
+  B2_AUTH_URL,
+  B2_PRIVATE
+} = process.env;
 
-// 🔐 Authorize Backblaze B2
+let authData = null;
+
 async function authorize() {
-  const credentials = Buffer.from(`${process.env.B2_KEY_ID}:${process.env.B2_APP_KEY}`).toString('base64');
-  const res = await axios.get(process.env.B2_AUTH_URL, {
+  if (authData) return authData;
+
+  const credentials = Buffer.from(`${B2_KEY_ID}:${B2_APP_KEY}`).toString('base64');
+  const res = await axios.get(B2_AUTH_URL || 'https://api.backblazeb2.com/b2api/v2/b2_authorize_account', {
     headers: { Authorization: `Basic ${credentials}` }
   });
 
-  b2Data = {
-    authToken: res.data.authorizationToken,
-    apiUrl: res.data.apiUrl,
-    downloadUrl: res.data.downloadUrl
-  };
+  authData = res.data;
+  return authData;
 }
 
-// 📤 Get B2 upload URL
 async function getUploadUrl() {
+  const auth = await authorize();
   const res = await axios.post(
-    `${b2Data.apiUrl}/b2api/v2/b2_get_upload_url`,
-    { bucketId: process.env.B2_BUCKET_ID },
-    { headers: { Authorization: b2Data.authToken } }
+    `${auth.apiUrl}/b2api/v2/b2_get_upload_url`,
+    { bucketId: B2_BUCKET_ID },
+    { headers: { Authorization: auth.authorizationToken } }
   );
   return res.data;
 }
 
-// 🔗 Generate signed URL (for private buckets)
-async function getSignedUrl(fileName, validSeconds = 3600) {
-  const res = await axios.post(
-    `${b2Data.apiUrl}/b2api/v2/b2_get_download_authorization`,
-    {
-      bucketId: process.env.B2_BUCKET_ID,
-      fileNamePrefix: fileName,
-      validDurationInSeconds: validSeconds
-    },
-    { headers: { Authorization: b2Data.authToken } }
-  );
-
-  const authToken = res.data.authorizationToken;
-  const encodedName = encodeURIComponent(fileName);
-
-  return `${b2Data.downloadUrl}/file/${process.env.B2_BUCKET_NAME}/${encodedName}?Authorization=${authToken}`;
+function generateShortFilename(originalName) {
+  const ext = path.extname(originalName);
+  const short = crypto.randomBytes(4).toString('hex');
+  return `${short}${ext}`;
 }
 
-// 🚀 Upload file using buffer (no temp file)
-async function uploadFile(buffer, fileName, userId) {
-  if (!b2Data) await authorize();
+async function generateSignedUrl(filePath) {
+  const auth = await authorize();
 
+  const res = await axios.post(
+    `${auth.apiUrl}/b2api/v2/b2_get_download_authorization`,
+    {
+      bucketId: B2_BUCKET_ID,
+      fileNamePrefix: filePath,
+      validDurationInSeconds: 3600
+    },
+    { headers: { Authorization: auth.authorizationToken } }
+  );
+
+  const token = res.data.authorizationToken;
+  return `${auth.downloadUrl}/file/${B2_BUCKET_NAME}/${filePath}?Authorization=${token}`;
+}
+
+async function uploadFile(fileBuffer, originalName, userId) {
   const { uploadUrl, authorizationToken } = await getUploadUrl();
 
-  const backblazePath = `${userId}/${fileName}`; // Folder = userId
+  const fileName = generateShortFilename(originalName);
+  const filePath = `${userId}/${fileName}`;
 
-  const res = await axios.post(uploadUrl, buffer, {
+  await axios.post(uploadUrl, fileBuffer, {
     headers: {
       Authorization: authorizationToken,
-      'X-Bz-File-Name': encodeURIComponent(backblazePath),
+      'X-Bz-File-Name': encodeURIComponent(filePath),
       'Content-Type': 'b2/x-auto',
-      'Content-Length': buffer.length,
       'X-Bz-Content-Sha1': 'do_not_verify'
-    }
+    },
+    maxBodyLength: Infinity
   });
 
-  const isPrivate = process.env.B2_PRIVATE === 'true';
+  const isPrivate = B2_PRIVATE === 'true';
 
-  const url = isPrivate
-    ? await getSignedUrl(backblazePath)
-    : `${b2Data.downloadUrl}/file/${process.env.B2_BUCKET_NAME}/${encodeURIComponent(backblazePath)}`;
+  const publicUrl = `${authData.downloadUrl}/file/${B2_BUCKET_NAME}/${filePath}`;
+  const finalUrl = isPrivate ? await generateSignedUrl(filePath) : publicUrl;
+
+  // Simulate a unique file ID (e.g., from fileName prefix)
+  const fileId = path.basename(fileName, path.extname(fileName));
 
   return {
-    fileId: res.data.fileId,
-    fileName: backblazePath,
-    downloadUrl: url
+    fileId,
+    fileName,
+    filePath: publicUrl,
+    downloadUrl: finalUrl
   };
 }
 

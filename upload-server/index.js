@@ -1,38 +1,62 @@
-require('dotenv').config();
-const Fastify = require('fastify');
+const fastify = require('fastify')();
 const multipart = require('@fastify/multipart');
-const { uploadStream } = require('./upload');
+const dotenv = require('dotenv');
+const { v4: uuidv4 } = require('uuid');
+const { uploadFile } = require('./upload');
+const { db, setupDatabase } = require('./db');
 
-const fastify = Fastify({ logger: true });
-
+dotenv.config();
 fastify.register(multipart);
 
-// Upload route (no temp file)
 fastify.post('/upload', async (req, reply) => {
+  const apiKey = req.headers['x-api-key'];
+  if (!apiKey) {
+    return reply.status(401).send({ error: 'Missing API key' });
+  }
+
+  const { rows } = await db.query(
+    'SELECT user_id FROM api_keys WHERE key = $1 LIMIT 1',
+    [apiKey]
+  );
+
+  if (rows.length === 0) {
+    return reply.status(403).send({ error: 'Invalid API key' });
+  }
+
+  const userId = rows[0].user_id;
+
   const data = await req.file();
+  const fileBuffer = await data.toBuffer();
   const fileName = `${Date.now()}-${data.filename}`;
-  const fileSize = parseInt(data.fields?.fileSize?.value || data.file.truncated ? 0 : data.file.bytesRead, 10);
+  const userPath = `${userId}/${fileName}`; // 👈 Folder per user
 
   try {
-    const result = await uploadStream(data.file, fileName, fileSize);
+    const { fileId, fileName: uploadedName, downloadUrl } = await uploadFile(fileBuffer, fileName, userId);
+
+    await db.query(
+      `INSERT INTO user_images (user_id, file_name, file_url, file_id) 
+       VALUES ($1, $2, $3, $4)`,
+      [userId, fileName, `${userId}/${fileName}`, fileId] // 👈 Save relative path
+    );
 
     reply.send({
       message: '✅ Uploaded to Backblaze!',
-      fileId: result.fileId,
-      fileName: result.fileName,
-      downloadUrl: result.downloadUrl
+      fileId,
+      fileName,
+      url: downloadUrl
     });
   } catch (err) {
-    req.log.error('❌ Upload error:', err);
-    reply.code(500).send({ error: 'Upload failed', detail: err.message });
+    console.error(err);
+    reply.status(500).send({ error: 'Upload failed' });
   }
 });
 
-fastify.get('/', async () => {
-  return { message: '🚀 Upload server running' };
-});
-
-fastify.listen({ port: 8000 }, (err, address) => {
-  if (err) throw err;
-  console.log(`🚀 Server ready at ${address}`);
+setupDatabase().then(() => {
+  fastify.listen({ port: 8000 }, (err) => {
+    if (err) {
+      console.error(err);
+      process.exit(1);
+    }
+    console.log('🚀 Server running at http://localhost:8000');
+  });
 });

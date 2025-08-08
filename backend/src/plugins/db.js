@@ -42,7 +42,6 @@ export default fp(async function (fastify, opts) {
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   created_at TIMESTAMP DEFAULT now(),
   custom_domain TEXT,
-  images JSONB DEFAULT '[]'
 );
   `)
 await pool.query(`

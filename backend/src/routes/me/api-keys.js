@@ -74,15 +74,15 @@ fastify.post('/me/api-keys/:id/toggle', async (req, reply) => {
 
   // Check ownership
   const { rows } = await fastify.pg.query(
-    'SELECT enabled FROM api_keys WHERE id = $1 AND user_id = $2',
+    'SELECT active FROM api_keys WHERE id = $1 AND user_id = $2',
     [id, userId]
   )
   if (!rows[0]) return reply.code(404).send({ error: 'Key not found' })
 
-  const newState = !rows[0].enabled
+  const newState = !rows[0].active
 
   const { rows: updated } = await fastify.pg.query(
-    'UPDATE api_keys SET enabled = $1 WHERE id = $2 RETURNING id, name, key, enabled, created_at',
+    'UPDATE api_keys SET active = $1 WHERE id = $2 RETURNING id, name, key, active, created_at',
     [newState, id]
   )
 

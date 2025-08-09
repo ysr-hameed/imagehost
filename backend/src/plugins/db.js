@@ -41,7 +41,7 @@ export default fp(async function (fastify, opts) {
   reset_token_expires TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   created_at TIMESTAMP DEFAULT now(),
-  custom_domain TEXT,
+  domain TEXT DEFAULT 'https://f000.backblazeb2.com'
 );
   `)
 await pool.query(`
@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
   user_id UUID REFERENCES users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   key TEXT NOT NULL UNIQUE,
-  enabled BOOLEAN DEFAULT TRUE,
+  active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMP DEFAULT NOW()
 );
 `)

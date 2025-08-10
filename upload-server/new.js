@@ -144,7 +144,7 @@ async function buildUrl(bucketId, bucketName, bucketHost, fileName, isPrivate, e
   const parts = fileName.split('/').map(encodeURIComponent);
   const urlPath = parts.join('/');
 
-  const baseUrl = `https://${bucketHost}/file/${bucketName}/${urlPath}`;
+  const baseUrl = `/file/${bucketName}/${urlPath}`;
   if (!isPrivate) return baseUrl;
 
   const ttl = expireSeconds && expireSeconds > 0 ? expireSeconds : 3600;
@@ -212,6 +212,12 @@ function validatePlanLimits(planRow, totalUploadSize, maxFileSizeRequested, expi
 }
 
 // ---------- Upload endpoint ----------
+// Utility for unique IDs
+function uniqueId(len = 6) {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  return Array.from(crypto.randomBytes(len), b => chars[b % chars.length]).join('');
+}
+
 fastify.post('/upload', async (req, reply) => {
   const start = Date.now();
   try {
@@ -221,10 +227,11 @@ fastify.post('/upload', async (req, reply) => {
     const user = await getUserByApiKey(apiKey);
     if (!user) return reply.code(403).send({ error: 'Invalid or inactive API key' });
 
-    // multipart parse
+    // parse multipart form
     const parts = req.parts();
     const fields = {};
     const files = [];
+
     for await (const part of parts) {
       if (!part) continue;
       if (part.file) {
@@ -232,7 +239,12 @@ fastify.post('/upload', async (req, reply) => {
           return reply.code(400).send({ error: 'Only image files allowed' });
         }
         const buffer = await streamToBuffer(part.file);
-        files.push({ buffer, originalFilename: part.filename, mimetype: part.mimetype, size: buffer.length });
+        files.push({
+          buffer,
+          originalFilename: part.filename,
+          mimetype: part.mimetype,
+          size: buffer.length
+        });
       } else {
         fields[part.fieldname] = part.value;
       }
@@ -243,99 +255,106 @@ fastify.post('/upload', async (req, reply) => {
     const rawPath = (fields.path || '').trim();
     const cleanedPath = rawPath.replace(/^\/+|\/+$/g, '').replace(/\\/g, '/');
 
-    const isPrivate = String(fields.is_private || 'false').toLowerCase() === 'true';
+    const isPrivate = String(fields.private || '').trim().toLowerCase() === 'true';
+
+    if (isPrivate && (!B2_PRIVATE_BUCKET_ID || !B2_PRIVATE_BUCKET_NAME)) {
+      return reply.code(500).send({ error: 'Private bucket configuration missing in environment variables' });
+    }
 
     let expireSeconds = parseInt(fields.expire_seconds, 10);
     if (isNaN(expireSeconds) || expireSeconds < 0) expireSeconds = 3600;
-    // Cap to 7 days absolute
     const MAX_7_DAYS = 7 * 24 * 3600;
     if (expireSeconds > MAX_7_DAYS) expireSeconds = MAX_7_DAYS;
 
-    const customFilename = fields.filename ? sanitizeFileName(fields.filename) : null;
-
-    // Load plans (cached)
+    // get plan limits
     const plans = await getPlans();
-
-    // determine plan row for user
     const planName = user.plan || 'free';
     const planRow = plans[planName];
     if (!planRow) return reply.code(500).send({ error: `Plan ${planName} not configured` });
 
-    // Compute totals
     const totalUploadSize = files.reduce((s, f) => s + f.size, 0);
     const maxFileSizeRequested = Math.max(...files.map(f => f.size));
 
-    // Validate limits (file size, expiry)
     validatePlanLimits(planRow, totalUploadSize, maxFileSizeRequested, expireSeconds);
 
-    // Check storage limit vs user's current usage
     if (planRow.storage_limit !== null && planRow.storage_limit !== undefined) {
       const currentStorageUsed = Number(user.storage_used || 0);
       if (currentStorageUsed + totalUploadSize > Number(planRow.storage_limit)) {
         return reply.code(413).send({ error: 'Upload exceeds your plan storage limit' });
       }
     }
-    // TODO: API request counts and bandwidth checks can be implemented similarly (tracking required)
 
-    // Initialize B2
     await initB2();
-
     const { bucketId, bucketName, bucketHost } = getBucketInfo(isPrivate);
 
     const results = [];
     for (const file of files) {
-      const ext = path.extname(customFilename || file.originalFilename).toLowerCase() || '.jpg';
-      const baseName = (customFilename ? path.basename(customFilename, ext) : path.basename(file.originalFilename, ext))
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '');
+      // Always random filename
+      const ext = path.extname(file.originalFilename).toLowerCase() || '.jpg';
+      const randomFileId = uniqueId(12); // for filename
+      const finalFileName = `${randomFileId}${ext}`;
 
-      let finalFileName = `${baseName}${ext}`;
-      let b2FileName = user.id;
+      // Always inside "user.id" folder
+      let b2FileName = `${user.id}`;
       if (cleanedPath) b2FileName += `/${cleanedPath}`;
       b2FileName += `/${finalFileName}`;
 
-      // collision check
-      const exists = await b2FileExists(bucketId, b2FileName);
-      if (exists) {
-        const uniqueSuffix = randomString(6);
-        finalFileName = `${baseName}-${uniqueSuffix}${ext}`;
-        b2FileName = user.id;
-        if (cleanedPath) b2FileName += `/${cleanedPath}`;
-        b2FileName += `/${finalFileName}`;
-      }
+      // No need to check exists — random ID makes collisions extremely rare
 
       try {
-        // Upload
         await b2UploadFile(bucketId, b2FileName, file.buffer, file.mimetype);
 
-        const imageId = randomString(12);
+        // Short unique ID for DB record
+        const imageId = uniqueId(6);
         const fullUrl = await buildUrl(bucketId, bucketName, bucketHost, b2FileName, isPrivate, expireSeconds);
-        const urlObj = new URL(fullUrl);
-        const urlPathOnly = urlObj.pathname + urlObj.search;
 
         let expireAt = null;
         if (isPrivate && expireSeconds > 0) expireAt = new Date(Date.now() + expireSeconds * 1000);
 
-        const insertRes = await pool.query(`
-          INSERT INTO images (id, user_id, path, filename, original_filename, content_type, size, url, is_private, expire_at)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-          RETURNING *`,
-          [imageId, user.id, cleanedPath || null, finalFileName, file.originalFilename, file.mimetype, file.size, urlPathOnly, isPrivate, expireAt]
+        const insertRes = await pool.query(
+          `INSERT INTO images (
+             id, user_id, path, filename, original_filename,
+             content_type, size, url, is_private, expire_at
+           )
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           RETURNING *`,
+          [
+            imageId,
+            user.id,
+            `${user.id}${cleanedPath ? '/' + cleanedPath : ''}`, // store path including user.id
+            finalFileName,
+            file.originalFilename,
+            file.mimetype,
+            file.size,
+            fullUrl,
+            isPrivate,
+            expireAt
+          ]
         );
 
-        // update storage usage
         await updateUserStorageUsed(user.id, file.size);
 
-        results.push({ original: file.originalFilename, filename: finalFileName, success: true, url: urlPathOnly, db: insertRes.rows[0] });
+        results.push({
+          original: file.originalFilename,
+          filename: finalFileName,
+          success: true,
+          url: fullUrl,
+          db: insertRes.rows[0]
+        });
       } catch (err) {
         fastify.log.error('Upload error: ' + err.message);
-        results.push({ original: file.originalFilename, success: false, error: err.message });
+        results.push({
+          original: file.originalFilename,
+          success: false,
+          error: err.message
+        });
       }
     }
 
     const took = Date.now() - start;
     fastify.log.info(`/upload completed in ${took}ms`);
     return reply.send({ ok: true, files: results });
+
   } catch (err) {
     fastify.log.error('Unexpected error: ' + (err && err.stack || err));
     return reply.code(500).send({ error: String(err && err.message ? err.message : err) });

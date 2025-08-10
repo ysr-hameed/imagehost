@@ -40,6 +40,9 @@ export default fp(async function (fastify, opts) {
   reset_token TEXT,
   reset_token_expires TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  plan text NOT NULL DEFAULT 'free',
+  plan_custom_data jsonb DEFAULT NULL,
+  storage_used bigint DEFAULT 0,
   created_at TIMESTAMP DEFAULT now(),
   domain TEXT DEFAULT 'https://f000.backblazeb2.com'
 );

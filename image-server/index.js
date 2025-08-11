@@ -10,8 +10,6 @@ const B2_PRIVATE_BUCKET_ID = process.env.B2_PRIVATE_BUCKET_ID;
 const B2_PUBLIC_BUCKET_ID = process.env.B2_PUBLIC_BUCKET_ID;
 const B2_PRIVATE_BUCKET_NAME = process.env.B2_PRIVATE_BUCKET_NAME;
 const B2_PUBLIC_BUCKET_NAME = process.env.B2_PUBLIC_BUCKET_NAME;
-const B2_PRIVATE_HOST = process.env.B2_PRIVATE_HOST || 'f006.backblazeb2.com';
-const B2_PUBLIC_HOST = process.env.B2_PUBLIC_HOST || 'f005.backblazeb2.com';
 
 const fastify = Fastify({ logger: true });
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -29,6 +27,7 @@ async function initB2() {
 
 async function getUserByApiKey(apiKey) {
   if (!apiKey) return null;
+  // Also select domain here
   const res = await pool.query(
     `SELECT u.* FROM api_keys k JOIN users u ON u.id = k.user_id WHERE k.key = $1 AND k.active = true LIMIT 1`,
     [apiKey]
@@ -66,10 +65,11 @@ function randomString(len = 10) {
   return Array.from(crypto.randomBytes(len), (b) => chars[b % chars.length]).join('');
 }
 
-async function buildDownloadUrl(bucketId, bucketName, bucketHost, fileName, isPrivate, expireSeconds) {
+async function buildDownloadUrl(bucketId, bucketName, domain, fileName, isPrivate, expireSeconds) {
+  // Use user's domain in URL instead of backblaze host
   const parts = fileName.split('/').map(encodeURIComponent);
   const urlPath = parts.join('/');
-  const baseUrl = `https://${bucketHost}/file/${bucketName}/${urlPath}`;
+  const baseUrl = `https://${domain}/${bucketName}/${urlPath}`;
   if (!isPrivate) return baseUrl;
 
   const ttl = expireSeconds && expireSeconds > 0 ? expireSeconds : 3600;
@@ -82,7 +82,7 @@ async function buildDownloadUrl(bucketId, bucketName, bucketHost, fileName, isPr
   return `${baseUrl}?Authorization=${encodeURIComponent(token)}`;
 }
 
-// Middleware to authenticate user and increment request count
+// Middleware: Authenticate and count requests (except /health)
 fastify.addHook('preHandler', async (req, reply) => {
   if (req.routerPath === '/health') return;
 
@@ -99,11 +99,11 @@ fastify.addHook('preHandler', async (req, reply) => {
   }
 });
 
-// GET all images (with optional filters: path & privacy, pagination)
+// GET all images
 fastify.get('/images', async (req, reply) => {
   const user = req.user;
-
   const { path, is_private, limit = 50, offset = 0 } = req.query;
+
   const conditions = ['user_id = $1'];
   const values = [user.id];
   let idx = 2;
@@ -128,7 +128,18 @@ fastify.get('/images', async (req, reply) => {
   values.push(Number(offset));
 
   const res = await pool.query(query, values);
-  return reply.send({ ok: true, images: res.rows });
+
+  // Build URLs using user domain
+  const images = res.rows.map((img) => {
+    const urlBase = `https://${user.domain}/${img.is_private ? B2_PRIVATE_BUCKET_NAME : B2_PUBLIC_BUCKET_NAME}`;
+    const filePath = `${user.id}${img.path ? `/${img.path}` : ''}/${img.filename}`;
+    return {
+      ...img,
+      url: `${urlBase}/${encodeURI(filePath)}`,
+    };
+  });
+
+  return reply.send({ ok: true, images });
 });
 
 // GET single image by id
@@ -139,10 +150,15 @@ fastify.get('/images/:id', async (req, reply) => {
   const res = await pool.query('SELECT * FROM images WHERE id = $1 AND user_id = $2', [id, user.id]);
   if (res.rows.length === 0) return reply.code(404).send({ error: 'Image not found' });
 
-  return reply.send({ ok: true, image: res.rows[0] });
+  const img = res.rows[0];
+  const urlBase = `https://${user.domain}/${img.is_private ? B2_PRIVATE_BUCKET_NAME : B2_PUBLIC_BUCKET_NAME}`;
+  const filePath = `${user.id}${img.path ? `/${img.path}` : ''}/${img.filename}`;
+  const url = `${urlBase}/${encodeURI(filePath)}`;
+
+  return reply.send({ ok: true, image: { ...img, url } });
 });
 
-// DELETE image by id and update user storage used
+// DELETE image by id
 fastify.delete('/images/:id', async (req, reply) => {
   const user = req.user;
   const { id } = req.params;
@@ -173,7 +189,7 @@ fastify.delete('/images/:id', async (req, reply) => {
   return reply.send({ ok: true, message: 'Image deleted' });
 });
 
-// PATCH image metadata (path, is_private, description)
+// PATCH image metadata
 fastify.patch('/images/:id', async (req, reply) => {
   const user = req.user;
   const { id } = req.params;
@@ -188,8 +204,6 @@ fastify.patch('/images/:id', async (req, reply) => {
   const updatedIsPrivate = is_private !== undefined ? Boolean(is_private) : image.is_private;
   const updatedDescription = description !== undefined ? description : image.description;
 
-  // Note: Changing privacy or path ideally requires file moving in B2 (not implemented here)
-
   await pool.query(
     'UPDATE images SET path = $1, is_private = $2, description = $3 WHERE id = $4',
     [updatedPath, updatedIsPrivate, updatedDescription, id]
@@ -198,7 +212,7 @@ fastify.patch('/images/:id', async (req, reply) => {
   return reply.send({ ok: true, message: 'Image metadata updated' });
 });
 
-// GET image download URL (with optional expiry seconds)
+// GET image download URL with user's domain and auth token for private files
 fastify.get('/images/:id/download', async (req, reply) => {
   const user = req.user;
   const { id } = req.params;
@@ -215,13 +229,12 @@ fastify.get('/images/:id/download', async (req, reply) => {
 
   const bucketId = image.is_private ? B2_PRIVATE_BUCKET_ID : B2_PUBLIC_BUCKET_ID;
   const bucketName = image.is_private ? B2_PRIVATE_BUCKET_NAME : B2_PUBLIC_BUCKET_NAME;
-  const bucketHost = image.is_private ? B2_PRIVATE_HOST : B2_PUBLIC_HOST;
 
   try {
     const url = await buildDownloadUrl(
       bucketId,
       bucketName,
-      bucketHost,
+      user.domain,
       `${user.id}${image.path ? `/${image.path}` : ''}/${image.filename}`,
       image.is_private,
       expireSeconds
@@ -229,67 +242,6 @@ fastify.get('/images/:id/download', async (req, reply) => {
     return reply.send({ ok: true, url });
   } catch (e) {
     return reply.code(500).send({ error: 'Failed to build download URL' });
-  }
-});
-
-// POST move image to new path (fixed)
-fastify.post('/images/:id/move', async (req, reply) => {
-  const user = req.user;
-  const { id } = req.params;
-  let { new_path } = req.body;
-
-  if (!new_path || typeof new_path !== 'string') {
-    return reply.code(400).send({ error: 'new_path is required' });
-  }
-  new_path = new_path.trim().replace(/^\/+|\/+$/g, '') || null;
-
-  const res = await pool.query('SELECT * FROM images WHERE id = $1 AND user_id = $2', [id, user.id]);
-  if (res.rows.length === 0) return reply.code(404).send({ error: 'Image not found' });
-
-  const image = res.rows[0];
-  await initB2();
-
-  const bucketId = image.is_private ? B2_PRIVATE_BUCKET_ID : B2_PUBLIC_BUCKET_ID;
-
-  const oldFileName = `${user.id}${image.path ? `/${image.path}` : ''}/${image.filename}`;
-  const newFileName = `${user.id}${new_path ? `/${new_path}` : ''}/${image.filename}`;
-
-  // Check if target path + filename already exists
-  const exists = await pool.query(
-    `SELECT 1 FROM images WHERE user_id = $1 AND path IS NOT DISTINCT FROM $2 AND filename = $3 AND is_private = $4 LIMIT 1`,
-    [user.id, new_path, image.filename, image.is_private]
-  );
-  if (exists.rowCount > 0) {
-    return reply.code(409).send({ error: 'File already exists in the target path' });
-  }
-
-  try {
-    // Copy file to new path
-    await b2Client.copyFile({
-      sourceFileName: oldFileName,
-      sourceBucketId: bucketId,
-      destinationBucketId: bucketId,
-      destinationFileName: newFileName,
-    });
-
-    // Delete old file versions
-    let listRes;
-    do {
-      listRes = await b2Client.listFileNames({ bucketId, startFileName: oldFileName, maxFileCount: 100 });
-      for (const file of listRes.data.files) {
-        if (file.fileName === oldFileName) {
-          await b2Client.deleteFileVersion({ fileId: file.fileId, fileName: oldFileName });
-        }
-      }
-    } while (listRes.data.nextFileName && listRes.data.nextFileName === oldFileName);
-
-    // Update DB path
-    await pool.query('UPDATE images SET path = $1 WHERE id = $2', [new_path, id]);
-
-    return reply.send({ ok: true, message: 'File moved successfully', new_path });
-  } catch (e) {
-    fastify.log.error(`Move file failed: ${e.message}`);
-    return reply.code(500).send({ error: 'Failed to move file' });
   }
 });
 
@@ -301,7 +253,7 @@ fastify.get('/me/plan', async (req, reply) => {
   return reply.send({ ok: true, plan: res.rows[0] });
 });
 
-// GET user stats: storage used, bandwidth used, API requests count today
+// GET user stats
 fastify.get('/me/stats', async (req, reply) => {
   const user = req.user;
   const bandwidthRes = await pool.query('SELECT bandwidth_used FROM user_bandwidth WHERE user_id = $1', [user.id]);
@@ -319,7 +271,7 @@ fastify.get('/me/stats', async (req, reply) => {
   });
 });
 
-// GET current user's API keys (excluding key value, only metadata for security)
+// GET current user's API keys (metadata only)
 fastify.get('/me/api-keys', async (req, reply) => {
   const user = req.user;
   const res = await pool.query(
@@ -327,12 +279,6 @@ fastify.get('/me/api-keys', async (req, reply) => {
     [user.id]
   );
   return reply.send({ ok: true, api_keys: res.rows });
-});
-
-// Optional: GET all plans
-fastify.get('/plans', async (req, reply) => {
-  const res = await pool.query(`SELECT * FROM plans`);
-  return reply.send({ ok: true, plans: res.rows });
 });
 
 // Health check

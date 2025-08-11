@@ -178,9 +178,12 @@ async function b2DeleteFileVersions(bucketId, fileName) {
 }
 
 async function buildDownloadUrl(bucketId, bucketName, bucketHost, fileName, isPrivate, expireSeconds) {
+  if (typeof fileName !== 'string') {
+    throw new Error(`Invalid fileName: expected string but got ${typeof fileName}`);
+  }
   const parts = fileName.split('/').map(encodeURIComponent);
   const urlPath = parts.join('/');
-  const baseUrl = `https://${bucketHost}/file/${bucketName}/${urlPath}`;
+  const baseUrl = `/file/${bucketName}/${urlPath}`;
   if (!isPrivate) return baseUrl;
 
   const ttl = expireSeconds && expireSeconds > 0 ? expireSeconds : 3600;
@@ -303,36 +306,7 @@ async function checkRateLimits(user, plan, uploadSize) {
   }
 }
 
-/** Cleanup Job: Deletes expired images from DB and B2 */
-async function cleanupExpiredFiles() {
-  try {
-    fastify.log.info('Running cleanup job for expired files...');
-    const now = new Date();
-    const res = await pool.query(`SELECT * FROM images WHERE expire_at IS NOT NULL AND expire_at <= $1`, [now]);
-    if (!res.rows.length) {
-      fastify.log.info('No expired files to clean up.');
-      return;
-    }
-    await initB2();
-    for (const img of res.rows) {
-      const { id, user_id, path: imgPath, filename, is_private } = img;
-      const bucketId = is_private ? B2_PRIVATE_BUCKET_ID : B2_PUBLIC_BUCKET_ID;
-      try {
-        // Delete file from B2
-        const b2FileName = user_id + (imgPath ? `/${imgPath}` : '') + '/' + filename;
-        await b2DeleteFileVersions(bucketId, b2FileName);
-        // Delete from DB
-        await pool.query('DELETE FROM images WHERE id = $1', [id]);
-        fastify.log.info(`Deleted expired file ${b2FileName} (id: ${id})`);
-        // Update user storage and bandwidth if you want (optional)
-      } catch (e) {
-        fastify.log.error(`Failed to delete expired file ${filename}: ${e.message}`);
-      }
-    }
-  } catch (err) {
-    fastify.log.error(`Cleanup job error: ${err.message || err}`);
-  }
-}
+
 
 
 
@@ -475,7 +449,7 @@ fastify.post('/upload', async (req, reply) => {
       await b2UploadFile(bucketId, b2FileName, file.buffer, file.mimetype);
 
       const imageId = randomString(12);
-      const fullUrl = await buildDownloadUrl(bucketId, bucketName, bucketHost, b2FileName, isPrivate, expireTokenSeconds);
+      const fullUrl = await buildDownloadUrl(bucketId, bucketName,bucketHost, b2FileName, isPrivate, expireTokenSeconds);
 
       let expireAt = null;
       if (expireDeleteSeconds > 0) expireAt = new Date(Date.now() + expireDeleteSeconds * 1000);
@@ -523,8 +497,7 @@ const insertRes = await pool.query(
   return reply.send({ ok: true, files: results });
 });
 
-/** Schedule cleanup job every hour */
-setInterval(cleanupExpiredFiles, CLEANUP_INTERVAL_MS);
+
 
 // Startup
 (async () => {
@@ -534,8 +507,6 @@ setInterval(cleanupExpiredFiles, CLEANUP_INTERVAL_MS);
     await getPlans(true);
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
     fastify.log.info(`Server listening on port ${PORT}`);
-    // Run cleanup job immediately on start
-    cleanupExpiredFiles();
   } catch (err) {
     console.error('Startup error:', err.stack || err.message || err);
     process.exit(1);

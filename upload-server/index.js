@@ -38,14 +38,19 @@ async function streamToBuffer(stream) {
 }
 
 function sanitizeFileName(name) {
-  return path.basename(name).toLowerCase().replace(/[^a-z0-9.\-_]/g, '_');
+  return path.basename(name || '').toLowerCase().replace(/[^a-z0-9.\-_]/g, '_');
+}
+
+function sanitizePath(p) {
+  if (!p) return '';
+  return String(p).trim().replace(/^\/+|\/+$/g, '').replace(/\\/g, '/');
 }
 
 function isImageMimeType(mime) {
   return /^image\/(png|jpeg|jpg|gif|webp|bmp|svg|tiff)$/.test(String(mime).toLowerCase());
 }
 
-/** DB Initialization */
+/** DB Initialization (kept as you had it) */
 async function ensureTables() {
   await pool.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
 
@@ -102,15 +107,15 @@ async function ensureTables() {
   const existingPlans = res.rows.map(r => r.plan);
 
   const insertPlans = [];
-if (!existingPlans.includes('free')) {
-  insertPlans.push(`('free', 'Free', ${5*1024*1024*1024}, ${15*1024*1024*1024}, ${10*1024*1024}, 500, ${7*24*3600}, false)`);
-}
-if (!existingPlans.includes('paid')) {
-  insertPlans.push(`('paid', '₹499/month', ${100*1024*1024*1024}, ${500*1024*1024*1024}, ${50*1024*1024}, 100000, ${7*24*3600}, false)`);
-}
-if (!existingPlans.includes('payg')) {
-  insertPlans.push(`('payg', 'Usage-based', NULL, NULL, ${50*1024*1024}, NULL, ${7*24*3600}, false)`);
-}
+  if (!existingPlans.includes('free')) {
+    insertPlans.push(`('free', 'Free', ${5*1024*1024*1024}, ${15*1024*1024*1024}, ${10*1024*1024}, 500, ${7*24*3600}, false)`);
+  }
+  if (!existingPlans.includes('paid')) {
+    insertPlans.push(`('paid', '₹499/month', ${100*1024*1024*1024}, ${500*1024*1024*1024}, ${50*1024*1024}, 100000, ${7*24*3600}, false)`);
+  }
+  if (!existingPlans.includes('payg')) {
+    insertPlans.push(`('payg', 'Usage-based', NULL, NULL, ${50*1024*1024}, NULL, ${7*24*3600}, false)`);
+  }
 
   if (insertPlans.length) {
     await pool.query(`
@@ -170,7 +175,11 @@ async function b2DeleteFileVersions(bucketId, fileName) {
     });
     for (const file of res.data.files) {
       if (file.fileName === fileName) {
-        await b2Client.deleteFileVersion({ fileName: file.fileName, fileId: file.fileId });
+        try {
+          await b2Client.deleteFileVersion({ fileName: file.fileName, fileId: file.fileId });
+        } catch (e) {
+          fastify.log.warn(`Failed to delete file version ${file.fileId} for ${fileName}: ${e.message}`);
+        }
       }
     }
     nextFileName = res.data.nextFileName;
@@ -309,7 +318,6 @@ async function checkRateLimits(user, plan, uploadSize) {
 
 
 
-
 fastify.post('/upload', async (req, reply) => {
   const start = Date.now();
 
@@ -338,28 +346,33 @@ fastify.post('/upload', async (req, reply) => {
   const fields = {};
   const files = [];
 
-  for await (const part of parts) {
-    if (!part) continue;
-    if (part.file) {
-      if (!isImageMimeType(part.mimetype)) {
-        return reply.code(400).send({ error: `Invalid file type: ${part.mimetype}` });
+  try {
+    for await (const part of parts) {
+      if (!part) continue;
+      if (part.file) {
+        // part.file is a stream, but part.filename/mimetype are available
+        if (!isImageMimeType(part.mimetype)) {
+          return reply.code(400).send({ error: `Invalid file type: ${part.mimetype}` });
+        }
+        // buffer the file for size check & upload
+        const buffer = await streamToBuffer(part.file);
+        if (plan.max_file_size && buffer.length > plan.max_file_size) {
+          return reply.code(413).send({ error: `File ${part.filename} exceeds max allowed size (${plan.max_file_size} bytes)` });
+        }
+        files.push({
+          buffer,
+          originalFilename: part.filename,
+          mimetype: part.mimetype,
+          size: buffer.length,
+        });
+      } else {
+        // regular field
+        fields[part.fieldname] = part.value;
       }
-      if (plan.max_file_size && part.file.truncated) {
-        return reply.code(413).send({ error: `File ${part.filename} exceeds max allowed size (${plan.max_file_size} bytes)` });
-      }
-      const buffer = await streamToBuffer(part.file);
-      if (plan.max_file_size && buffer.length > plan.max_file_size) {
-        return reply.code(413).send({ error: `File ${part.filename} exceeds max allowed size (${plan.max_file_size} bytes)` });
-      }
-      files.push({
-        buffer,
-        originalFilename: part.filename,
-        mimetype: part.mimetype,
-        size: buffer.length,
-      });
-    } else {
-      fields[part.fieldname] = part.value;
     }
+  } catch (err) {
+    fastify.log.error(`Error parsing multipart: ${err.message}`);
+    return reply.code(500).send({ error: 'Failed to parse multipart form' });
   }
 
   if (!files.length) return reply.code(400).send({ error: 'No files uploaded' });
@@ -375,7 +388,7 @@ fastify.post('/upload', async (req, reply) => {
   await incrementUserRequestCount(user.id);
 
   const rawPath = (fields.path || '').trim();
-  const cleanedPath = rawPath.replace(/^\/+|\/+$/g, '').replace(/\\/g, '/');
+  const cleanedPath = sanitizePath(rawPath);
 
   const isPrivate = String(fields.private || '').toLowerCase() === 'true';
 
@@ -394,11 +407,12 @@ fastify.post('/upload', async (req, reply) => {
     if (expireTokenSeconds > 7 * 24 * 3600) expireTokenSeconds = 7 * 24 * 3600;
   }
 
-  
-  
-
   for (const file of files) {
-    validatePlanLimits(plan, file.size, expireTokenSeconds);
+    try {
+      validatePlanLimits(plan, file.size, expireTokenSeconds);
+    } catch (err) {
+      return reply.code(413).send({ error: err.message });
+    }
   }
 
   await initB2();
@@ -409,69 +423,134 @@ fastify.post('/upload', async (req, reply) => {
 
   const results = [];
 
-  for (const file of files) {
+  // Parse overwrite/override parameter: accept ?override=true or form field overwrite=true
+  const queryOverride = String(req.query && req.query.override ? req.query.override : '').toLowerCase() === 'true';
+  const fieldOverwrite = String(fields.overwrite || fields.override || '').toLowerCase() === 'true';
+  const overwrite = queryOverride || fieldOverwrite;
+
+  // support single filename param (applied to first file) or custom_filename field
+  const providedFilenameRaw = (fields.filename || fields.custom_filename || fields.customFileName || '').trim();
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
     let ext = path.extname(file.originalFilename).toLowerCase() || '.jpg';
 
-    const customFilenameRaw = (fields.custom_filename || fields.customFileName || '').trim();
+    // decide per-file custom name:
+    // if user provided a filename and multiple files uploaded, we'll append an index if needed
+    let customFilenameRaw = providedFilenameRaw;
+
+    // If there are multiple files and the user provided filename but it doesn't contain a placeholder,
+    // we will append an index to avoid using the same provided name for multiple files.
+    if (customFilenameRaw && files.length > 1) {
+      // If user provided something like "name.jpg" we will convert to "name-1.jpg", "name-2.jpg", ...
+      const baseProvided = sanitizeFileName(customFilenameRaw);
+      const extProvided = path.extname(baseProvided) || ext;
+      const baseOnly = path.basename(baseProvided, extProvided);
+      customFilenameRaw = `${baseOnly}-${i + 1}${extProvided}`;
+    }
 
     let finalFileName;
 
     if (customFilenameRaw) {
+      // If custom filename provided by user, sanitize and keep extension (or add if missing)
       let sanitized = sanitizeFileName(customFilenameRaw);
       if (!path.extname(sanitized)) sanitized += ext;
 
+      // check existence
       const existingRes = await pool.query(
         `SELECT 1 FROM images WHERE user_id = $1 AND path IS NOT DISTINCT FROM $2 AND filename = $3 AND is_private = $4 LIMIT 1`,
         [user.id, cleanedPath || null, sanitized, isPrivate]
       );
+
       if (existingRes.rowCount > 0) {
-        const uniqueSuffix = '-' + randomString(6);
-        const baseName = path.basename(sanitized, ext);
-        finalFileName = baseName + uniqueSuffix + ext;
+        if (overwrite) {
+          // remove old B2 versions and DB rows (we'll continue and insert new)
+          try {
+            await b2DeleteFileVersions(bucketId, `${user.id}${cleanedPath ? `/${cleanedPath}` : ''}/${sanitized}`);
+          } catch (e) {
+            fastify.log.warn(`Could not delete old file versions for overwrite: ${e.message}`);
+          }
+          try {
+            await pool.query(
+              `DELETE FROM images WHERE user_id = $1 AND path IS NOT DISTINCT FROM $2 AND filename = $3 AND is_private = $4`,
+              [user.id, cleanedPath || null, sanitized, isPrivate]
+            );
+          } catch (e) {
+            fastify.log.warn(`Could not delete old DB image rows for overwrite: ${e.message}`);
+          }
+          finalFileName = sanitized;
+        } else {
+          // add suffix to avoid collision
+          const baseName = path.basename(sanitized, path.extname(sanitized) || ext);
+          finalFileName = `${baseName}-${randomString(6)}${path.extname(sanitized) || ext}`;
+        }
       } else {
         finalFileName = sanitized;
       }
     } else {
-      finalFileName = `${randomString(12)}${ext}`;
-    }
+      // No custom filename provided -> try to keep original filename
+      let sanitizedOrig = sanitizeFileName(file.originalFilename);
+      if (!path.extname(sanitizedOrig)) sanitizedOrig += ext;
 
-    if (!customFilenameRaw && String(fields.overwrite || '').toLowerCase() === 'true') {
-      try {
-        await b2DeleteFileVersions(bucketId, `${user.id}${cleanedPath ? `/${cleanedPath}` : ''}/${finalFileName}`);
-      } catch (e) {
-        fastify.log.warn(`Could not delete old file versions for overwrite: ${e.message}`);
+      const existingRes = await pool.query(
+        `SELECT 1 FROM images WHERE user_id = $1 AND path IS NOT DISTINCT FROM $2 AND filename = $3 AND is_private = $4 LIMIT 1`,
+        [user.id, cleanedPath || null, sanitizedOrig, isPrivate]
+      );
+
+      if (existingRes.rowCount > 0) {
+        if (overwrite) {
+          try {
+            await b2DeleteFileVersions(bucketId, `${user.id}${cleanedPath ? `/${cleanedPath}` : ''}/${sanitizedOrig}`);
+          } catch (e) {
+            fastify.log.warn(`Could not delete old file versions for overwrite: ${e.message}`);
+          }
+          try {
+            await pool.query(
+              `DELETE FROM images WHERE user_id = $1 AND path IS NOT DISTINCT FROM $2 AND filename = $3 AND is_private = $4`,
+              [user.id, cleanedPath || null, sanitizedOrig, isPrivate]
+            );
+          } catch (e) {
+            fastify.log.warn(`Could not delete old DB image rows for overwrite: ${e.message}`);
+          }
+          finalFileName = sanitizedOrig;
+        } else {
+          const baseName = path.basename(sanitizedOrig, path.extname(sanitizedOrig) || ext);
+          finalFileName = `${baseName}-${randomString(6)}${path.extname(sanitizedOrig) || ext}`;
+        }
+      } else {
+        finalFileName = sanitizedOrig;
       }
     }
 
+    // Build B2 path and upload
     const b2FileName = `${user.id}${cleanedPath ? `/${cleanedPath}` : ''}/${finalFileName}`;
 
     try {
       await b2UploadFile(bucketId, b2FileName, file.buffer, file.mimetype);
 
       const imageId = randomString(12);
-      const fullUrl = await buildDownloadUrl(bucketId, bucketName,bucketHost, b2FileName, isPrivate, expireTokenSeconds);
+      const fullUrl = await buildDownloadUrl(bucketId, bucketName, bucketHost, b2FileName, isPrivate, expireTokenSeconds);
 
       let expireAt = null;
       if (expireDeleteSeconds > 0) expireAt = new Date(Date.now() + expireDeleteSeconds * 1000);
-const insertRes = await pool.query(
-  `INSERT INTO images (id, user_id, path, filename, original_filename, content_type, size, url, is_private, expire_at, description)
-   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-   RETURNING *`,
-  [
-    imageId,
-    user.id,
-    cleanedPath || null,
-    finalFileName,
-    file.originalFilename,
-    file.mimetype,
-    file.size,
-    fullUrl,
-    isPrivate,
-    expireAt,
-    fields.description || null,
-  ]
-);
-      
+      const insertRes = await pool.query(
+        `INSERT INTO images (id, user_id, path, filename, original_filename, content_type, size, url, is_private, expire_at, description)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         RETURNING *`,
+        [
+          imageId,
+          user.id,
+          cleanedPath || null,
+          finalFileName,
+          file.originalFilename,
+          file.mimetype,
+          file.size,
+          fullUrl,
+          isPrivate,
+          expireAt,
+          fields.description || null,
+        ]
+      );
 
       await updateUserStorageUsed(user.id, file.size);
       await updateUserBandwidthUsed(user.id, file.size);
@@ -496,8 +575,6 @@ const insertRes = await pool.query(
   fastify.log.info(`/upload finished in ${Date.now() - start}ms`);
   return reply.send({ ok: true, files: results });
 });
-
-
 
 // Startup
 (async () => {

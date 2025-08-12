@@ -130,7 +130,8 @@ async function ensureTables() {
       path text NOT NULL,
       is_private boolean DEFAULT false,
       b2_file_id text NOT NULL,
-      created_at timestamptz DEFAULT now()
+      created_at timestamptz DEFAULT now(),
+      expire_at timestamptz
     );
   `);
 
@@ -307,11 +308,44 @@ async function checkRateLimits(user, plan, uploadSize) {
 }
 
 /** Insert file info into files_to_delete for deferred deletion */
-async function enqueueFileForDeletion(user_id, bucket_id, file_name, url, path, is_private, b2_file_id) {
-  await pool.query(
-    `INSERT INTO files_to_delete (user_id, bucket_id, file_name, url, path, is_private, b2_file_id) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [user_id, bucket_id, file_name, url, path, is_private, b2_file_id]
-  );
+async function enqueueFileForDeletion(
+    user_id,
+    bucket_id,
+    file_name,
+    url,
+    path,
+    is_private,
+    b2_file_id,
+    expire_at
+) {
+    try {
+        // Remove any existing scheduled deletion for the same file
+        await pool.query(
+            `DELETE FROM files_to_delete
+             WHERE user_id = $1 AND bucket_id = $2 AND file_name = $3`,
+            [user_id, bucket_id, file_name]
+        );
+
+        // Insert the new deletion record
+        await pool.query(
+            `INSERT INTO files_to_delete 
+                (user_id, bucket_id, file_name, url, path, is_private, b2_file_id, expire_at) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+                user_id,
+                bucket_id,
+                file_name,
+                url,
+                path,
+                is_private,
+                b2_file_id,
+                expire_at
+            ]
+        );
+    } catch (err) {
+        console.error("Error enqueuing file for deletion:", err);
+        throw err; // rethrow so caller can handle
+    }
 }
 
 // Helper: check if a file with filename + path exists for the user
@@ -456,14 +490,19 @@ fastify.post('/upload', async (req, reply) => {
 
     // Check if file exists for override logic
     let existingFile = null;
-    if (queryOverride) {
-      existingFile = await getFileByUserAndPath(user.id, finalFilename, cleanedPath);
-    } else {
-      const exists = await fileExists(user.id, finalFilename, cleanedPath);
-      if (exists) {
-        return reply.code(409).send({ error: `File ${finalFilename} already exists at path ${cleanedPath}. Use override=true to replace.` });
-      }
-    }
+
+if (queryOverride) {
+  // Try to fetch the file, so we can replace if exists
+  existingFile = await getFileByUserAndPath(user.id, finalFilename, cleanedPath);
+} else {
+  const exists = await fileExists(user.id, finalFilename, cleanedPath);
+  if (exists) {
+    // Auto-rename if override=false and file exists
+    const base = path.basename(finalFilename, path.extname(finalFilename));
+    const ext = path.extname(finalFilename);
+    finalFilename = `${base}-${crypto.randomBytes(3).toString('hex')}${ext}`;
+  }
+}
 
     // Upload file to B2
     let uploadRes;
@@ -512,7 +551,18 @@ fastify.post('/upload', async (req, reply) => {
         uploadRes.fileId,
       ]
     );
-
+if (expireAt) {
+    await enqueueFileForDeletion(
+        user.id,
+        isPrivate ? B2_PRIVATE_BUCKET_ID : B2_PUBLIC_BUCKET_ID,
+        finalFilename,              // matches what you stored in DB
+        fileUrl,                     // same as images.url
+        cleanedPath,                 // matches images.path
+        isPrivate,
+        uploadRes.fileId,            // same as images.b2_file_id
+        expireAt
+    );
+}
     // Increase user's storage used by new file size
     await updateUserStorageUsed(user.id, file.size);
 

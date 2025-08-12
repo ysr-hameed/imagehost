@@ -6,6 +6,7 @@ const B2 = require('backblaze-b2');
 const crypto = require('crypto');
 const path = require('path');
 const { request } = require('undici');
+const cors = require('@fastify/cors');
 
 const PORT = process.env.PORT || 3000;
 
@@ -70,26 +71,7 @@ async function ensureTables() {
     );
   `);
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
-      email text UNIQUE NOT NULL,
-      plan text NOT NULL REFERENCES plans(plan),
-      storage_used bigint DEFAULT 0,
-      created_at timestamptz DEFAULT now(),
-      updated_at timestamptz DEFAULT now()
-    );
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS api_keys (
-      key text PRIMARY KEY,
-      user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      active boolean DEFAULT true,
-      internal boolean DEFAULT false, -- identifies platform/internal keys
-      created_at timestamptz DEFAULT now()
-    );
-  `);
+  
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS images (
@@ -608,6 +590,7 @@ async function cleanupExpiredFiles() {
 // Schedule cleanup every hour
 setInterval(cleanupExpiredFiles, CLEANUP_INTERVAL_MS);
 
+fastify.register(cors, { origin: true });
 (async () => {
   await ensureTables();
   await initB2();

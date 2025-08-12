@@ -42,7 +42,8 @@
 }
 
 .nav a:hover {
-  background: var(--bg-alt);
+  background: var(--bg-secondary);
+  color: var(--text);
 }
 
 .nav a.router-link-exact-active {

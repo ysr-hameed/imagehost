@@ -37,10 +37,21 @@ const routes = [
     }
   },
   
-      {
+  {
     path: '/docs',
     name: 'Documentation',
     component: () => import('@/views/Route_Pages/Docs.vue'),
+    meta: {
+      layout: 'default',
+      requiresAuth: true,
+      title: 'Dashboard',
+      description: 'Manage your activity and Startups.'
+    }
+  },
+    {
+    path: '/upload',
+    name: 'Upload',
+    component: () => import('@/views/Route_Pages/Upload.vue'),
     meta: {
       layout: 'default',
       requiresAuth: true,

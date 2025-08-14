@@ -1,15 +1,17 @@
+// server.js
 require('dotenv').config();
 const Fastify = require('fastify');
 const multipart = require('@fastify/multipart');
+const cors = require('@fastify/cors');
 const { Pool } = require('pg');
 const B2 = require('backblaze-b2');
 const crypto = require('crypto');
 const path = require('path');
 const { request } = require('undici');
-const cors = require('@fastify/cors');
 
 const PORT = process.env.PORT || 3000;
 
+/** ====================== Bucket Config ====================== */
 const B2_PUBLIC_BUCKET_ID = process.env.B2_PUBLIC_BUCKET_ID;
 const B2_PUBLIC_BUCKET_NAME = process.env.B2_PUBLIC_BUCKET_NAME;
 const B2_PUBLIC_HOST = process.env.B2_PUBLIC_HOST || 'f005.backblazeb2.com';
@@ -18,20 +20,22 @@ const B2_PRIVATE_BUCKET_ID = process.env.B2_PRIVATE_BUCKET_ID;
 const B2_PRIVATE_BUCKET_NAME = process.env.B2_PRIVATE_BUCKET_NAME;
 const B2_PRIVATE_HOST = process.env.B2_PRIVATE_HOST || 'f006.backblazeb2.com';
 
+/** ====================== Limits & Defaults ====================== */
 const PLAN_CACHE_DURATION = parseInt(process.env.PLAN_CACHE_DURATION || '604800000', 10); // 7 days
-
-const MAX_EXPIRE_DELETE_SECONDS = 7 * 24 * 3600; // 7 days max delete time
-const DEFAULT_PRIVATE_TOKEN_EXPIRY = 24 * 3600; // 1 day default token expiry for private files
+const MAX_EXPIRE_DELETE_SECONDS = 7 * 24 * 3600; // cap deletion scheduling to 7 days
+// IMPORTANT: default private token expiry = NEVER (null). You’ll handle extension via cron.
+const DEFAULT_PRIVATE_TOKEN_EXPIRY = null;
 
 const fastify = Fastify({ logger: true });
 fastify.register(multipart, { limits: { fileSize: 200 * 1024 * 1024 } });
+fastify.register(cors, { origin: true });
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
-/** Helpers */
+/** ====================== Helpers ====================== */
 function randomString(len = 10) {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-  return Array.from(crypto.randomBytes(len), b => chars[b % chars.length]).join('');
+  return Array.from(crypto.randomBytes(len), b => chars[b % chars.length]).map(b => chars[b % chars.length]).join('');
 }
 
 async function streamToBuffer(stream) {
@@ -41,19 +45,38 @@ async function streamToBuffer(stream) {
 }
 
 function sanitizeFileName(name) {
-  return path.basename(name || '').toLowerCase().replace(/[^a-z0-9.-]/g, '');
+  return path.basename(name || '').toLowerCase().replace(/[^a-z0-9._-]/g, '');
 }
 
 function sanitizePath(p) {
-  if (!p) return '';
-  return String(p).trim().replace(/^\/+|\/+$/g, '');
+  return String(p || '').trim().replace(/^\/+|\/+$/g, '');
 }
 
 function isImageMimeType(mime) {
-  return /^image\/(png|jpeg|jpg|gif|webp|bmp|svg|tiff)$/.test(String(mime).toLowerCase());
+  const m = String(mime || '').toLowerCase();
+  return /^image\/(png|jpe?g|gif|webp|bmp|svg\+xml|tiff)$/.test(m);
 }
 
-/** DB Initialization */
+function ensureExtension(filename, mimetype) {
+  if (path.extname(filename)) return filename;
+  const map = {
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/png': '.png',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    'image/bmp': '.bmp',
+    'image/svg+xml': '.svg',
+    'image/tiff': '.tiff'
+  };
+  return filename + (map[String(mimetype).toLowerCase()] || '');
+}
+
+function joinKeyPath(dir, file) {
+  return dir ? `${dir}/${file}` : file;
+}
+
+/** ====================== DB Init ====================== */
 async function ensureTables() {
   await pool.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
 
@@ -71,8 +94,6 @@ async function ensureTables() {
     );
   `);
 
-  
-
   await pool.query(`
     CREATE TABLE IF NOT EXISTS images (
       id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -82,10 +103,10 @@ async function ensureTables() {
       original_filename text,
       content_type text,
       size bigint,
-      url text,
+      url text, -- path only: /file/<bucket>/<key>
       is_private boolean DEFAULT false,
       expire_at timestamptz,
-      expire_token_seconds int DEFAULT 0,
+      expire_token_seconds int,
       description text,
       tags jsonb,
       b2_file_id text,
@@ -101,15 +122,14 @@ async function ensureTables() {
     );
   `);
 
-  // files_to_delete table stores info for deferred deletion
   await pool.query(`
     CREATE TABLE IF NOT EXISTS files_to_delete (
       id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
       user_id uuid NOT NULL,
       bucket_id text NOT NULL,
-      file_name text NOT NULL,
-      url text NOT NULL,
-      path text NOT NULL,
+      file_name text NOT NULL,   -- key within bucket (includes path)
+      url text NOT NULL,         -- store path-only here as well
+      path text NOT NULL,        -- logical folder (for convenience)
       is_private boolean DEFAULT false,
       b2_file_id text NOT NULL,
       created_at timestamptz DEFAULT now(),
@@ -117,30 +137,147 @@ async function ensureTables() {
     );
   `);
 
-  // Insert default plans if missing
   const res = await pool.query(`SELECT plan FROM plans`);
-  const existingPlans = res.rows.map(r => r.plan);
+  const existing = new Set(res.rows.map(r => r.plan));
 
-  const insertPlans = [];
-  if (!existingPlans.includes('free')) {
-    insertPlans.push(`('free', 'Free', ${5 * 1024 * 1024 * 1024}, ${10 * 1024 * 1024}, 500, ${7 * 24 * 3600}, false)`);
+  const insert = [];
+  if (!existing.has('free')) {
+    insert.push(`('free','Free',${5 * 1024 * 1024 * 1024},${10 * 1024 * 1024},500,${7 * 24 * 3600},false)`);
   }
-  if (!existingPlans.includes('paid')) {
-    insertPlans.push(`('paid', '₹499/month', ${100 * 1024 * 1024 * 1024}, ${50 * 1024 * 1024}, 100000, ${7 * 24 * 3600}, false)`);
+  if (!existing.has('paid')) {
+    insert.push(`('paid','₹499/month',${100 * 1024 * 1024 * 1024},${50 * 1024 * 1024},100000,${7 * 24 * 3600},false)`);
   }
-  if (!existingPlans.includes('payg')) {
-    insertPlans.push(`('payg', 'Usage-based', NULL, ${50 * 1024 * 1024}, NULL, ${7 * 24 * 3600}, false)`);
+  if (!existing.has('payg')) {
+    insert.push(`('payg','Usage-based',NULL,${50 * 1024 * 1024},NULL,${7 * 24 * 3600},false)`);
   }
-
-  if (insertPlans.length) {
+  if (insert.length) {
     await pool.query(`
       INSERT INTO plans (plan, price_text, storage_limit, max_file_size, max_api_requests, max_signed_url_expiry_seconds, custom)
-      VALUES ${insertPlans.join(',')}
+      VALUES ${insert.join(',')}
     `);
   }
 }
 
-/** Backblaze B2 Client */
+/** ====================== Plans Cache ====================== */
+let cachedPlans = null;
+let plansCacheTs = 0;
+
+async function getPlans(force = false) {
+  const now = Date.now();
+  if (!force && cachedPlans && now - plansCacheTs < PLAN_CACHE_DURATION) return cachedPlans;
+  const res = await pool.query(`SELECT * FROM plans`);
+  const map = {};
+  for (const row of res.rows) map[row.plan] = row;
+  cachedPlans = map;
+  plansCacheTs = now;
+  fastify.log.info('Plans cache refreshed');
+  return map;
+}
+
+/** ====================== Users & Limits ====================== */
+async function getUserByApiKey(apiKey) {
+  if (!apiKey) return null;
+  const res = await pool.query(`
+    SELECT u.* FROM api_keys k
+    JOIN users u ON u.id = k.user_id
+    WHERE k.key = $1 AND k.active = true
+    LIMIT 1
+  `, [apiKey]);
+  return res.rows[0] || null;
+}
+
+async function getUserDomain(userId) {
+  const r = await pool.query(`SELECT domain FROM users WHERE id = $1 LIMIT 1`, [userId]);
+  return r.rows.length ? r.rows[0].domain : null;
+}
+
+async function getUserRequestCount(userId) {
+  const res = await pool.query(`SELECT * FROM user_requests WHERE user_id = $1`, [userId]);
+  if (!res.rows.length) return 0;
+  const row = res.rows[0];
+  const now = Date.now();
+  const last = new Date(row.last_reset).getTime();
+  if (now - last > 24 * 3600 * 1000) {
+    await pool.query(`UPDATE user_requests SET request_count = 0, last_reset = now() WHERE user_id = $1`, [userId]);
+    return 0;
+  }
+  return row.request_count || 0;
+}
+
+async function incrementUserRequestCount(userId) {
+  const count = await getUserRequestCount(userId);
+  if (count === 0) {
+    await pool.query(`
+      INSERT INTO user_requests (user_id, request_count, last_reset)
+      VALUES ($1, 1, now())
+      ON CONFLICT (user_id) DO UPDATE SET request_count = 1, last_reset = now()
+    `, [userId]);
+  } else {
+    await pool.query(`UPDATE user_requests SET request_count = request_count + 1 WHERE user_id = $1`, [userId]);
+  }
+}
+
+async function getUserStorageUsed(userId) {
+  const r = await pool.query(`SELECT storage_used FROM users WHERE id = $1`, [userId]);
+  return r.rows.length ? Number(r.rows[0].storage_used || 0) : 0;
+}
+
+async function updateUserStorageUsed(userId, bytes) {
+  await pool.query(`UPDATE users SET storage_used = COALESCE(storage_used,0) + $1 WHERE id = $2`, [bytes, userId]);
+}
+
+function validatePlanLimits(plan, fileSize, expireSeconds) {
+  if (plan.max_file_size && fileSize > Number(plan.max_file_size)) {
+    throw new Error(`File size ${fileSize} exceeds plan max ${plan.max_file_size}`);
+  }
+  if (plan.max_signed_url_expiry_seconds && expireSeconds && expireSeconds > plan.max_signed_url_expiry_seconds) {
+    throw new Error(`Expiry seconds ${expireSeconds} exceeds plan max ${plan.max_signed_url_expiry_seconds}`);
+  }
+}
+
+async function checkRateLimits(user, plan, uploadSize) {
+  if (!user.internal) {
+    const requestCount = await getUserRequestCount(user.id);
+    if (plan.max_api_requests != null && requestCount >= plan.max_api_requests) {
+      throw new Error(`API request limit exceeded (${requestCount}/${plan.max_api_requests})`);
+    }
+  }
+  const storageUsed = await getUserStorageUsed(user.id);
+  if (plan.storage_limit != null && storageUsed + uploadSize > plan.storage_limit) {
+    throw new Error(`Storage limit exceeded (${storageUsed + uploadSize} / ${plan.storage_limit})`);
+  }
+}
+
+/** ====================== Files table helpers ====================== */
+async function fileExists(userId, filename, dirPath) {
+  const r = await pool.query(
+    `SELECT 1 FROM images WHERE user_id = $1 AND filename = $2 AND path = $3 LIMIT 1`,
+    [userId, filename, dirPath]
+  );
+  return r.rowCount > 0;
+}
+
+async function getFileByUserAndPath(userId, filename, dirPath) {
+  const r = await pool.query(
+    `SELECT * FROM images WHERE user_id = $1 AND filename = $2 AND path = $3 LIMIT 1`,
+    [userId, filename, dirPath]
+  );
+  return r.rows[0] || null;
+}
+
+async function enqueueFileForDeletion(user_id, bucket_id, file_name_key, url_path, dir_path, is_private, b2_file_id, expire_at) {
+  // ensure path-only in url_path
+  await pool.query(
+    `DELETE FROM files_to_delete WHERE user_id = $1 AND bucket_id = $2 AND file_name = $3`,
+    [user_id, bucket_id, file_name_key]
+  );
+  await pool.query(`
+    INSERT INTO files_to_delete (user_id, bucket_id, file_name, url, path, is_private, b2_file_id, expire_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+  `, [user_id, bucket_id, file_name_key, url_path, dir_path, is_private, b2_file_id, expire_at]);
+}
+
+/** ====================== Backblaze B2 ====================== */
 let b2Client = null;
 
 async function initB2() {
@@ -150,204 +287,53 @@ async function initB2() {
     applicationKey: process.env.B2_APP_KEY,
   });
   await b2Client.authorize();
-  fastify.log.info(`Backblaze authorized (apiUrl=${b2Client.apiUrl})`);
+  fastify.log.info(`Backblaze authorized`);
 }
 
-async function b2UploadFile(bucketId, fileName, buffer, mimeType) {
+async function b2UploadFile(bucketId, fileKey, buffer, mimeType) {
   const uploadUrlRes = await b2Client.getUploadUrl({ bucketId });
-  const uploadUrl = uploadUrlRes.data.uploadUrl;
-  const uploadAuthToken = uploadUrlRes.data.authorizationToken;
-
-  const headers = {
-    Authorization: uploadAuthToken,
-    'X-Bz-File-Name': fileName,
-    'Content-Type': mimeType || 'b2/x-auto',
-    'Content-Length': buffer.length.toString(),
-    'X-Bz-Content-Sha1': 'do_not_verify',
-  };
-
+  const { uploadUrl, authorizationToken } = uploadUrlRes.data;
   const res = await request(uploadUrl, {
     method: 'POST',
-    headers,
+    headers: {
+      Authorization: authorizationToken,
+      'X-Bz-File-Name': fileKey,
+      'Content-Type': mimeType || 'b2/x-auto',
+      'Content-Length': buffer.length.toString(),
+      'X-Bz-Content-Sha1': 'do_not_verify',
+    },
     body: buffer,
   });
-
   if (res.statusCode !== 200) {
     const body = await res.body.text();
     throw new Error(`B2 upload failed status ${res.statusCode}: ${body}`);
   }
-
   return res.body.json();
 }
 
-/** Build download URL */
-async function buildDownloadUrl(bucketId, bucketName, bucketHost, fileName, isPrivate, expireSeconds) {
-  if (typeof fileName !== 'string') {
-    throw new Error(`Invalid fileName: expected string but got ${typeof fileName}`);
-  }
-  const parts = fileName.split('/').map(encodeURIComponent);
-  const urlPath = parts.join('/');
-  const baseUrl = `/file/${bucketName}/${urlPath}`;
-  if (!isPrivate) return baseUrl;
+/**
+ * Build a PATH-ONLY download path the way B2 serves files: /file/<bucketName>/<key>
+ * If private and expireSeconds is provided (number), returns the same path (we store path-only in DB).
+ * Token is NOT appended here by default unless you explicitly pass expireSeconds.
+ * Domain is added only when responding to the client.
+ */
+async function buildDownloadPath(bucketId, bucketName, isPrivate, fileKey, expireSeconds) {
+  if (typeof fileKey !== 'string') throw new Error(`Invalid fileKey: ${typeof fileKey}`);
+  const pathOnly = `/file/${bucketName}/${fileKey.split('/').map(encodeURIComponent).join('/')}`;
+  if (!isPrivate) return pathOnly;
+  // Private: if expireSeconds is null/undefined, we do NOT append token — you handle via cron/edge.
+  if (expireSeconds == null) return pathOnly;
 
-  const ttl = expireSeconds && expireSeconds > 0 ? expireSeconds : DEFAULT_PRIVATE_TOKEN_EXPIRY;
   const auth = await b2Client.getDownloadAuthorization({
     bucketId,
-    fileNamePrefix: fileName,
-    validDurationInSeconds: ttl,
+    fileNamePrefix: fileKey,
+    validDurationInSeconds: expireSeconds,
   });
   const token = auth.data.authorizationToken || auth.data.authorization;
-  return `${baseUrl}?Authorization=${encodeURIComponent(token)}`;
+  return `${pathOnly}?Authorization=${encodeURIComponent(token)}`;
 }
 
-/** Cached Plans */
-let cachedPlans = null;
-let plansCacheTs = 0;
-
-async function getPlans(force = false) {
-  const now = Date.now();
-  if (!force && cachedPlans && now - plansCacheTs < PLAN_CACHE_DURATION) {
-    return cachedPlans;
-  }
-  const res = await pool.query(`SELECT * FROM plans`);
-  cachedPlans = {};
-  for (const row of res.rows) cachedPlans[row.plan] = row;
-  plansCacheTs = now;
-  fastify.log.info('Plans cache refreshed');
-  return cachedPlans;
-}
-
-/** User & Limits Helpers */
-async function getUserByApiKey(apiKey) {
-  if (!apiKey) return null;
-  const res = await pool.query(
-  `SELECT u.* FROM api_keys k JOIN users u ON u.id = k.user_id WHERE k.key = $1 AND k.active = true LIMIT 1`,
-  [apiKey]
-);
-  return res.rows[0] || null;
-}
-
-async function getUserRequestCount(userId) {
-  const res = await pool.query(`SELECT * FROM user_requests WHERE user_id = $1`, [userId]);
-  if (res.rows.length === 0) return 0;
-  const row = res.rows[0];
-  const now = new Date();
-  const lastReset = new Date(row.last_reset);
-  // Reset count daily
-  if (now - lastReset > 24 * 3600 * 1000) {
-    await pool.query(`UPDATE user_requests SET request_count = 0, last_reset = now() WHERE user_id = $1`, [userId]);
-    return 0;
-  }
-  return row.request_count;
-}
-
-async function incrementUserRequestCount(userId) {
-  const current = await getUserRequestCount(userId);
-  if (current === 0) {
-    await pool.query(
-      `INSERT INTO user_requests (user_id, request_count, last_reset) VALUES ($1, 1, now()) ON CONFLICT (user_id) DO UPDATE SET request_count = 1, last_reset = now()`,
-      [userId]
-    );
-  } else {
-    await pool.query(`UPDATE user_requests SET request_count = request_count + 1 WHERE user_id = $1`, [userId]);
-  }
-}
-
-async function getUserStorageUsed(userId) {
-  const res = await pool.query(`SELECT storage_used FROM users WHERE id = $1`, [userId]);
-  return res.rows.length ? Number(res.rows[0].storage_used) : 0;
-}
-
-async function updateUserStorageUsed(userId, bytes) {
-  await pool.query(`UPDATE users SET storage_used = storage_used + $1 WHERE id = $2`, [bytes, userId]);
-}
-
-function validatePlanLimits(plan, fileSize, expireSeconds) {
-  if (plan.max_file_size && fileSize > Number(plan.max_file_size)) {
-    throw new Error(`File size ${fileSize} exceeds plan max ${plan.max_file_size}`);
-  }
-  if (plan.max_signed_url_expiry_seconds && expireSeconds > plan.max_signed_url_expiry_seconds) {
-    throw new Error(`Expiry seconds ${expireSeconds} exceeds plan max ${plan.max_signed_url_expiry_seconds}`);
-  }
-}
-
-async function checkRateLimits(user, plan, uploadSize) {
-  // Check API request count only for non-internal keys
-  if (!user.internal) {
-    const requestCount = await getUserRequestCount(user.id);
-    if (plan.max_api_requests !== null && plan.max_api_requests !== undefined && requestCount >= plan.max_api_requests) {
-      throw new Error(`API request limit exceeded (${requestCount}/${plan.max_api_requests})`);
-    }
-  }
-
-  // No bandwidth limit check as per request
-
-  // Check storage limit
-  const storageUsed = await getUserStorageUsed(user.id);
-  if (plan.storage_limit !== null && plan.storage_limit !== undefined && storageUsed + uploadSize > plan.storage_limit) {
-    throw new Error(`Storage limit exceeded (${storageUsed + uploadSize} / ${plan.storage_limit})`);
-  }
-}
-
-/** Insert file info into files_to_delete for deferred deletion */
-async function enqueueFileForDeletion(
-    user_id,
-    bucket_id,
-    file_name,
-    url,
-    path,
-    is_private,
-    b2_file_id,
-    expire_at
-) {
-    try {
-        // Remove any existing scheduled deletion for the same file
-        await pool.query(
-            `DELETE FROM files_to_delete
-             WHERE user_id = $1 AND bucket_id = $2 AND file_name = $3`,
-            [user_id, bucket_id, file_name]
-        );
-
-        // Insert the new deletion record
-        await pool.query(
-            `INSERT INTO files_to_delete 
-                (user_id, bucket_id, file_name, url, path, is_private, b2_file_id, expire_at) 
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-            [
-                user_id,
-                bucket_id,
-                file_name,
-                url,
-                path,
-                is_private,
-                b2_file_id,
-                expire_at
-            ]
-        );
-    } catch (err) {
-        console.error("Error enqueuing file for deletion:", err);
-        throw err; // rethrow so caller can handle
-    }
-}
-
-// Helper: check if a file with filename + path exists for the user
-async function fileExists(userId, filename, path) {
-  const res = await pool.query(
-    `SELECT 1 FROM images WHERE user_id = $1 AND filename = $2 AND path = $3 LIMIT 1`,
-    [userId, filename, path]
-  );
-  return res.rowCount > 0;
-}
-
-// Helper: get existing file info for override logic
-async function getFileByUserAndPath(userId, filename, path) {
-  const res = await pool.query(
-    `SELECT * FROM images WHERE user_id = $1 AND filename = $2 AND path = $3 LIMIT 1`,
-    [userId, filename, path]
-  );
-  return res.rows[0] || null;
-}
-
+/** ====================== Upload Route ====================== */
 fastify.post('/upload', async (req, reply) => {
   const start = Date.now();
   const apiKey = req.headers['x-api-key'];
@@ -360,18 +346,14 @@ fastify.post('/upload', async (req, reply) => {
   const plan = plans[user.plan] || plans['free'];
   if (!plan) return reply.code(500).send({ error: 'User plan not found' });
 
-  // Accept any multipart, json, form, query fields
-  // Multipart parts
-  const parts = req.isMultipart() ? req.parts() : [];
   const fields = {};
   const files = [];
 
   try {
     if (req.isMultipart()) {
-      for await (const part of parts) {
+      for await (const part of req.parts()) {
         if (!part) continue;
         if (part.file) {
-          // File part
           if (!isImageMimeType(part.mimetype)) {
             return reply.code(400).send({ error: `Invalid file type: ${part.mimetype}` });
           }
@@ -386,15 +368,11 @@ fastify.post('/upload', async (req, reply) => {
             size: buffer.length,
           });
         } else {
-          // Field part
           fields[part.fieldname] = part.value;
         }
       }
-    } else {
-      // If not multipart, parse JSON or form body
-      if (req.body) {
-        Object.assign(fields, req.body);
-      }
+    } else if (req.body) {
+      Object.assign(fields, req.body);
     }
   } catch (err) {
     fastify.log.error(`Error parsing multipart: ${err.message}`);
@@ -404,157 +382,169 @@ fastify.post('/upload', async (req, reply) => {
   if (!files.length) return reply.code(400).send({ error: 'No files uploaded' });
 
   const totalUploadSize = files.reduce((sum, f) => sum + f.size, 0);
-
   try {
     await checkRateLimits(user, plan, totalUploadSize);
-  } catch (rateErr) {
-    return reply.code(429).send({ error: rateErr.message });
+  } catch (e) {
+    return reply.code(429).send({ error: e.message });
   }
 
-  // Only increment API request count for external keys (not internal platform)
   if (!user.internal) {
     await incrementUserRequestCount(user.id);
   }
 
-  const rawPath = (fields.path || '').trim();
-  const cleanedPath = sanitizePath(rawPath);
+  const cleanedPath = sanitizePath(fields.path || '');
   const isPrivate = String(fields.private || '').toLowerCase() === 'true';
-
   if (isPrivate && (!B2_PRIVATE_BUCKET_ID || !B2_PRIVATE_BUCKET_NAME)) {
     return reply.code(500).send({ error: 'Private bucket configuration missing' });
   }
 
-  let expireDeleteSeconds = parseInt(fields.expire_delete || '0', 10);
+  // deletion schedule seconds (cap)
+  let expireDeleteSeconds = parseInt(fields.expire_delete ?? '0', 10);
   if (isNaN(expireDeleteSeconds) || expireDeleteSeconds < 0) expireDeleteSeconds = 0;
   if (expireDeleteSeconds > MAX_EXPIRE_DELETE_SECONDS) expireDeleteSeconds = MAX_EXPIRE_DELETE_SECONDS;
 
+  // private token expiry seconds: default = NEVER (null)
   let expireTokenSeconds = 0;
   if (isPrivate) {
-    expireTokenSeconds = parseInt(fields.expire_token_seconds || String(DEFAULT_PRIVATE_TOKEN_EXPIRY), 10);
-    if (isNaN(expireTokenSeconds) || expireTokenSeconds <= 0) expireTokenSeconds = DEFAULT_PRIVATE_TOKEN_EXPIRY;
-    if (expireTokenSeconds > MAX_EXPIRE_DELETE_SECONDS) expireTokenSeconds = MAX_EXPIRE_DELETE_SECONDS;
-  }
-
-  for (const file of files) {
-    try {
-      validatePlanLimits(plan, file.size, expireTokenSeconds);
-    } catch (err) {
-      return reply.code(413).send({ error: err.message });
+    if (fields.expire_token_seconds === undefined || fields.expire_token_seconds === null || fields.expire_token_seconds === '' ) {
+      expireTokenSeconds = null; // never
+    } else {
+      const v = parseInt(String(fields.expire_token_seconds), 10);
+      expireTokenSeconds = isNaN(v) || v <= 0 ? null : Math.min(v, MAX_EXPIRE_DELETE_SECONDS);
     }
   }
+
+  // override behavior via query ?override=true
+  const queryOverride = String(req.query?.override || '').toLowerCase() === 'true';
 
   await initB2();
 
-  const { bucketId, bucketName, bucketHost } = isPrivate
-    ? { bucketId: B2_PRIVATE_BUCKET_ID, bucketName: B2_PRIVATE_BUCKET_NAME, bucketHost: B2_PRIVATE_HOST }
-    : { bucketId: B2_PUBLIC_BUCKET_ID, bucketName: B2_PUBLIC_BUCKET_NAME, bucketHost: B2_PUBLIC_HOST };
+  const bucketId = isPrivate ? B2_PRIVATE_BUCKET_ID : B2_PUBLIC_BUCKET_ID;
+  const bucketName = isPrivate ? B2_PRIVATE_BUCKET_NAME : B2_PUBLIC_BUCKET_NAME;
+  const fallbackHost = isPrivate ? B2_PRIVATE_HOST : B2_PUBLIC_HOST;
 
+  const userDomain = await getUserDomain(user.id);
   const results = [];
 
-  const queryOverride = String(req.query?.override || '').toLowerCase() === 'true';
+  let providedFilename = sanitizeFileName(fields.filename || '');
 
-  for (const file of files) {
-    // Filename logic
-    let finalFilename;
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
 
-    if (fields.filename) {
-      // Use user provided filename sanitized, without path
-      finalFilename = sanitizeFileName(fields.filename);
-    } else {
-      // Use original filename sanitized
-      finalFilename = sanitizeFileName(file.originalFilename);
-    } if (!finalFilename) {
-      finalFilename = randomString(12);
+    // Determine final filename with extension logic
+    let finalFilename = providedFilename || sanitizeFileName(file.originalFilename) || randomString(12);
+    finalFilename = ensureExtension(finalFilename, file.mimetype);
+
+    // If multiple files and single provided filename without override, auto-unique
+    if (!queryOverride && providedFilename) {
+      const base = path.basename(finalFilename, path.extname(finalFilename));
+      const ext = path.extname(finalFilename);
+      // add suffix to avoid collision among batch itself
+      if (files.length > 1) finalFilename = `${base}-${i + 1}${ext}`;
     }
 
-    // Compose full file path
-    const fullFilePath = cleanedPath ? `${cleanedPath}/${finalFilename}` : finalFilename;
+    // If not override, and file already exists in DB for this user/path, auto-rename with a short hex
+    if (!queryOverride) {
+      const exists = await fileExists(user.id, finalFilename, cleanedPath);
+      if (exists) {
+        const base = path.basename(finalFilename, path.extname(finalFilename));
+        const ext = path.extname(finalFilename);
+        finalFilename = `${base}-${crypto.randomBytes(3).toString('hex')}${ext}`;
+      }
+    }
 
-    // Check if file exists for override logic
+    // If override, fetch existing record
     let existingFile = null;
+    if (queryOverride) {
+      existingFile = await getFileByUserAndPath(user.id, finalFilename, cleanedPath);
+    }
 
-if (queryOverride) {
-  // Try to fetch the file, so we can replace if exists
-  existingFile = await getFileByUserAndPath(user.id, finalFilename, cleanedPath);
-} else {
-  const exists = await fileExists(user.id, finalFilename, cleanedPath);
-  if (exists) {
-    // Auto-rename if override=false and file exists
-    const base = path.basename(finalFilename, path.extname(finalFilename));
-    const ext = path.extname(finalFilename);
-    finalFilename = `${base}-${crypto.randomBytes(3).toString('hex')}${ext}`;
-  }
-}
+    // Validate per-file limits
+    try {
+      validatePlanLimits(plan, file.size, expireTokenSeconds ?? undefined);
+    } catch (e) {
+      return reply.code(413).send({ error: e.message });
+    }
 
-    // Upload file to B2
+    // Upload to B2
+    const fileKey = joinKeyPath(cleanedPath, finalFilename);
     let uploadRes;
     try {
-      uploadRes = await b2UploadFile(bucketId, fullFilePath, file.buffer, file.mimetype);
-    } catch (uploadErr) {
-      fastify.log.error(`B2 upload error: ${uploadErr.message}`);
+      uploadRes = await b2UploadFile(bucketId, fileKey, file.buffer, file.mimetype);
+    } catch (e) {
+      fastify.log.error(`B2 upload error: ${e.message}`);
       return reply.code(500).send({ error: `Failed to upload file ${finalFilename}` });
     }
 
-    // If overriding an existing file, enqueue previous file for deletion and adjust storage used
+    // If overriding, queue prior file for deletion and adjust storage
     if (existingFile) {
-      await enqueueFileForDeletion(user.id, bucketId, existingFile.path ? `${existingFile.path}/${existingFile.filename}` : existingFile.filename, existingFile.url, existingFile.path, existingFile.is_private, existingFile.b2_file_id);
-      // Decrease storage used by old file size
-      await updateUserStorageUsed(user.id, -existingFile.size);
-      // Remove existing DB record
+      const prevKey = joinKeyPath(existingFile.path || '', existingFile.filename);
+      await enqueueFileForDeletion(
+        user.id,
+        bucketId,
+        prevKey,
+        existingFile.url,   // path-only stored previously
+        existingFile.path,
+        existingFile.is_private,
+        existingFile.b2_file_id,
+        null                // immediate (you can run a worker to flush)
+      );
+      await updateUserStorageUsed(user.id, -Number(existingFile.size || 0));
       await pool.query(`DELETE FROM images WHERE id = $1`, [existingFile.id]);
     }
 
-    // Calculate expire_at timestamp if expire_delete > 0
-    let expireAt = null;
-    if (expireDeleteSeconds > 0) {
-      expireAt = new Date(Date.now() + expireDeleteSeconds * 1000);
+    // Deletion schedule timestamp for the *new* file
+    const expireAt = expireDeleteSeconds > 0 ? new Date(Date.now() + expireDeleteSeconds * 1000) : null;
+
+    // Build the *path-only* download path. Append token ONLY if explicit seconds given.
+    const dbPathUrl = await buildDownloadPath(bucketId, bucketName, isPrivate, fileKey, expireTokenSeconds);
+
+    // Store path-only in DB
+    await pool.query(`
+      INSERT INTO images
+        (user_id, path, filename, original_filename, content_type, size, url, is_private, expire_at, expire_token_seconds, b2_file_id, created_at)
+      VALUES
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())
+    `, [
+      user.id,
+      cleanedPath,
+      finalFilename,
+      file.originalFilename,
+      file.mimetype,
+      file.size,
+      dbPathUrl,                 // path-only (may include token if explicitly requested)
+      isPrivate,
+      expireAt,
+      expireTokenSeconds,        // null = never
+      uploadRes.fileId
+    ]);
+
+    // If we scheduled deletion, queue it in files_to_delete (store path-only url)
+    if (expireAt) {
+      await enqueueFileForDeletion(
+        user.id,
+        bucketId,
+        fileKey,
+        dbPathUrl,
+        cleanedPath,
+        isPrivate,
+        uploadRes.fileId,
+        expireAt
+      );
     }
 
-    // Generate download URL (private with auth token if needed)
-    let fileUrl = await buildDownloadUrl(bucketId, bucketName, bucketHost, fullFilePath, isPrivate, expireTokenSeconds);
-
-    // Insert new file metadata into DB
-    const insertRes = await pool.query(
-      `INSERT INTO images 
-      (user_id, path, filename, original_filename, content_type, size, url, is_private, expire_at, expire_token_seconds, b2_file_id, created_at) 
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now()) 
-      RETURNING id, url`,
-      [
-        user.id,
-        cleanedPath,
-        finalFilename,
-        file.originalFilename,
-        file.mimetype,
-        file.size,
-        fileUrl,
-        isPrivate,
-        expireAt,
-        expireTokenSeconds,
-        uploadRes.fileId,
-      ]
-    );
-if (expireAt) {
-    await enqueueFileForDeletion(
-        user.id,
-        isPrivate ? B2_PRIVATE_BUCKET_ID : B2_PUBLIC_BUCKET_ID,
-        finalFilename,              // matches what you stored in DB
-        fileUrl,                     // same as images.url
-        cleanedPath,                 // matches images.path
-        isPrivate,
-        uploadRes.fileId,            // same as images.b2_file_id
-        expireAt
-    );
-}
-    // Increase user's storage used by new file size
+    // Update storage used
     await updateUserStorageUsed(user.id, file.size);
 
+    // Build full URL for response (domain first, else B2 host)
+    const fullUrl = `${(userDomain || fallbackHost)}${dbPathUrl}`;
+
     results.push({
-      id: insertRes.rows[0].id,
-      url: fileUrl,
       filename: finalFilename,
       path: cleanedPath,
       size: file.size,
       private: isPrivate,
+      url: fullUrl,     // full URL for client use
     });
   }
 
@@ -566,17 +556,20 @@ if (expireAt) {
   });
 });
 
-
-fastify.register(cors, { origin: true });
+/** ====================== Boot ====================== */
 (async () => {
-  await ensureTables();
-  await initB2();
-
-  fastify.listen({ port: PORT }, (err, address) => {
-    if (err) {
-      fastify.log.error(err);
-      process.exit(1);
-    }
-    fastify.log.info(`Server listening at ${address}`);
-  });
+  try {
+    await ensureTables();
+    await initB2();
+    fastify.listen({ port: PORT }, (err, address) => {
+      if (err) {
+        fastify.log.error(err);
+        process.exit(1);
+      }
+      fastify.log.info(`Server listening at ${address}`);
+    });
+  } catch (e) {
+    fastify.log.error(e);
+    process.exit(1);
+  }
 })();

@@ -37,6 +37,17 @@ const routes = [
     }
   },
   
+      {
+    path: '/files',
+    name: 'Files',
+    component: () => import('@/views/Route_Pages/Files.vue'),
+    meta: {
+      layout: 'default',
+      requiresAuth: true,
+      title: 'Dashboard',
+      description: 'Manage your activity and Startups.'
+    }
+  },
   {
     path: '/docs',
     name: 'Documentation',

@@ -6,6 +6,7 @@ const { Pool } = require('pg');
 const B2 = require('backblaze-b2');
 const crypto = require('crypto');
 const path = require('path');
+const cors = require('@fastify/cors');
 
 const PORT = process.env.USER_API_PORT || 4000;
 
@@ -350,7 +351,7 @@ fastify.get('/me/api-keys', async (req, reply) => {
 });
 
 fastify.get('/health', async () => ({ ok: true, status: 'alive' }));
-
+fastify.register(cors, { origin: true });
 // Start server
 (async () => {
   try {

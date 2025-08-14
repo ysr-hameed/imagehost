@@ -19,7 +19,7 @@ const B2_PRIVATE_BUCKET_NAME = process.env.B2_PRIVATE_BUCKET_NAME;
 const B2_PRIVATE_HOST = process.env.B2_PRIVATE_HOST || 'f006.backblazeb2.com';
 
 const PLAN_CACHE_DURATION = parseInt(process.env.PLAN_CACHE_DURATION || '604800000', 10); // 7 days
-const CLEANUP_INTERVAL_MS = 1000 * 60 * 60; // 1 hour
+
 const MAX_EXPIRE_DELETE_SECONDS = 7 * 24 * 3600; // 7 days max delete time
 const DEFAULT_PRIVATE_TOKEN_EXPIRY = 24 * 3600; // 1 day default token expiry for private files
 
@@ -558,7 +558,7 @@ if (expireAt) {
     });
   }
 
-  return reply.code(201).send({
+  return reply.code(200).send({
     success: true,
     uploaded: results.length,
     files: results,
@@ -566,29 +566,6 @@ if (expireAt) {
   });
 });
 
-/** Cleanup: Background deletion of expired files */
-async function cleanupExpiredFiles() {
-  try {
-    await initB2();
-    const toDeleteRes = await pool.query(`SELECT * FROM files_to_delete ORDER BY created_at ASC LIMIT 50`);
-    for (const file of toDeleteRes.rows) {
-      try {
-        // Delete file from B2
-        await b2Client.deleteFileVersion({ fileName: file.file_name, fileId: file.b2_file_id });
-        // Remove DB record
-        await pool.query(`DELETE FROM files_to_delete WHERE id = $1`, [file.id]);
-        fastify.log.info(`Deleted file ${file.file_name} for user ${file.user_id}`);
-      } catch (delErr) {
-        fastify.log.error(`Error deleting file ${file.file_name}: ${delErr.message}`);
-      }
-    }
-  } catch (err) {
-    fastify.log.error(`Cleanup error: ${err.message}`);
-  }
-}
-
-// Schedule cleanup every hour
-setInterval(cleanupExpiredFiles, CLEANUP_INTERVAL_MS);
 
 fastify.register(cors, { origin: true });
 (async () => {

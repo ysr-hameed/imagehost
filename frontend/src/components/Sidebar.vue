@@ -12,7 +12,7 @@
   <span v-if="!collapsed">API Key</span>
 </router-link>
 
-      <router-link to="/Upload" @click="handleLinkClick">
+      <router-link to="/upload" @click="handleLinkClick">
         <CompassIcon :size="20" />
         <span v-if="!collapsed">Explore</span>
       </router-link>

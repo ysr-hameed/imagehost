@@ -1,7 +1,6 @@
 <template>
   <div class="upload-page">
     <h1 class="title">Upload File</h1>
-<p v-if="!loadingApiKey">Current API key: {{ apiKey }}</p>
     <!-- Dropzone -->
     <div
       class="file-dropzone"
@@ -73,9 +72,7 @@
     </label>
 
     <!-- Advanced Options -->
-    <button class="toggle-advanced" @click="showAdvanced = !showAdvanced">
-      <Settings /> {{ showAdvanced ? "Hide Advanced Options" : "Show Advanced Options" }}
-    </button>
+
 
     <div v-if="showAdvanced" class="advanced-fields">
       <label class="field">
@@ -95,10 +92,13 @@
         <span>Make file private</span>
       </label>
     </div>
-
+    <button class="toggle-advanced" @click="showAdvanced = !showAdvanced">
+      <Settings /> {{ showAdvanced ? "Hide Advanced Options" : "Show Advanced Options" }}
+    </button>
+    <br>
     <!-- Upload Button -->
     <button
-      class="btn-upload"
+      class="btn btn-primary fw"
       :disabled="uploading || files.length === 0 || loadingApiKey || !apiKey"
       @click="uploadFiles"
     >

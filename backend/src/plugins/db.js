@@ -60,7 +60,7 @@ export default fp(async function (fastify, opts) {
       plan_custom_data jsonb DEFAULT NULL,
       storage_used bigint DEFAULT 0,
       created_at TIMESTAMP DEFAULT now(),
-      domain TEXT DEFAULT 'https://f000.backblazeb2.com'
+      domain TEXT DEFAULT 'https://f005.backblazeb2.com'
     );
   `)
 

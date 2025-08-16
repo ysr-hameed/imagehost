@@ -78,7 +78,9 @@ onBeforeUnmount(() => {
 <style scoped>
 .select-wrapper {
   position: relative;
-  width: max-content;
+  /* Let width be controlled externally */
+  width: 100%;
+  max-width: 100%;
 }
 
 .select-display {
@@ -88,11 +90,12 @@ onBeforeUnmount(() => {
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--text-muted);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 0.5rem 0.9rem;
   font-size: 0.95rem;
   cursor: pointer;
   min-width: 160px;
+  width: 100%; /* Make it fill wrapper */
 }
 
 .label-content {
@@ -107,12 +110,12 @@ onBeforeUnmount(() => {
 
 .select-dropdown {
   position: absolute;
-  top: 75%;
+  top: calc(100% + 4px);
   left: 0;
   right: 0;
   background: var(--bg);
   border: 1px solid var(--text-muted);
-  border-radius: 8px;
+  border-radius: var(--radius);
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
   z-index: 10;
   padding: 0.25rem 0;

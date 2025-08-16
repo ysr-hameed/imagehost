@@ -18,6 +18,7 @@
             v-model="selectedTheme"
             :options="themeOptions"
             class="select"
+            style="width: 200px"
             @update:modelValue="onThemeChange"
           />
         </div>

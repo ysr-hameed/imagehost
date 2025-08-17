@@ -5,7 +5,6 @@ const multipart = require('@fastify/multipart');
 const cors = require('@fastify/cors');
 const { Pool } = require('pg');
 const B2 = require('backblaze-b2');
-const crypto = require('crypto');
 const path = require('path');
 
 const PORT = process.env.USER_API_PORT || 4000;
@@ -40,7 +39,22 @@ async function initB2() {
   fastify.log.info(`Backblaze authorized (apiUrl=${b2Client.apiUrl})`);
 }
 
-// --- Helper functions ---
+// --- Auto-create table for private_urls ---
+(async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS private_urls (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL,
+      file_id UUID NOT NULL,
+      requested_expire_at TIMESTAMP NOT NULL,
+      b2_token TEXT,
+      b2_token_expires_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT now()
+    )
+  `);
+})();
+
+// --- Helpers ---
 function sanitizeFileName(filename) {
   const base = path.basename(filename || 'file');
   return base.replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -56,7 +70,7 @@ async function buildPrivateDownloadUrl(bucketId, bucketName, domain, fileName, e
     fileNamePrefix: fileName,
     validDurationInSeconds: valid,
   });
-  const token = (auth?.data?.authorizationToken || auth?.data?.authorization) || '';
+  const token = auth?.data?.authorizationToken || '';
   const base = domain
     ? `https://${domain}/${bucketName}/${encodeURIComponent(fileName)}`
     : `${b2Client.downloadUrl}/${bucketName}/${encodeURIComponent(fileName)}`;
@@ -119,12 +133,11 @@ fastify.addHook('preHandler', async (req, reply) => {
 // Health
 fastify.get('/health', async () => ({ ok: true, status: 'alive' }));
 
-// List images (with search, sort, pagination)
+// List/search images with filter & pagination
 fastify.get('/images', async (req, reply) => {
   const user = req.user;
-  const { q = '', sort = 'created_at_desc', page = 1, limit = 20 } = req.query;
+  let { page = 1, limit = 20, q = '', tags = '', is_private } = req.query;
   const MAX_LIMIT = 50;
-
   const l = Math.min(Number(limit) || 20, MAX_LIMIT);
   const p = Math.max(Number(page) || 1, 1);
   const offset = (p - 1) * l;
@@ -133,7 +146,26 @@ fastify.get('/images', async (req, reply) => {
   const values = [user.id];
   let idx = 2;
 
-  if (q) { conditions.push(`filename ILIKE $${idx++}`); values.push(`%${q}%`); }
+  if (q) {
+    conditions.push(`(filename ILIKE $${idx} OR description ILIKE $${idx})`);
+    values.push(`%${q}%`);
+    idx++;
+  }
+
+  if (tags) {
+    const tagList = tags.split(',').map(t => t.trim());
+    tagList.forEach(tag => {
+      conditions.push(`tags ILIKE $${idx}`);
+      values.push(`%${tag}%`);
+      idx++;
+    });
+  }
+
+  if (is_private !== undefined) {
+    conditions.push(`is_private = $${idx}`);
+    values.push(is_private === 'true');
+    idx++;
+  }
 
   const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
@@ -141,51 +173,43 @@ fastify.get('/images', async (req, reply) => {
   const totalCount = parseInt(countRes.rows[0].total, 10);
   const totalPages = Math.ceil(totalCount / l);
 
-  // Sort
-  let orderBy = 'created_at DESC';
-  if (sort === 'created_at_asc') orderBy = 'created_at ASC';
-  if (sort === 'size_asc') orderBy = 'size ASC';
-  if (sort === 'size_desc') orderBy = 'size DESC';
-
   values.push(l, offset);
   const res = await pool.query(
-    `SELECT id, filename, is_private, size, description, created_at FROM images ${where} ORDER BY ${orderBy} LIMIT $${idx++} OFFSET $${idx++}`,
+    `SELECT id, filename, is_private, size, description, tags, created_at 
+     FROM images ${where} ORDER BY created_at DESC LIMIT $${idx++} OFFSET $${idx++}`,
     values
   );
 
   const images = res.rows.map(img => {
     const bucketName = img.is_private ? B2_PRIVATE_BUCKET_NAME : B2_PUBLIC_BUCKET_NAME;
-    const filePath = `${user.id}/${img.filename}`;
-    const url = `https://${user.domain || b2Client.downloadUrl}/${bucketName}/${encodeURIComponent(filePath)}`;
+    const url = `https://${user.domain || b2Client.downloadUrl}/${bucketName}/${encodeURIComponent(user.id + '/' + img.filename)}`;
     return { ...img, url };
   });
 
-  return reply.send({
-    ok: true,
-    images,
-    pagination: { totalCount, totalPages, page: p, limit: l, hasNext: p < totalPages, hasPrev: p > 1 },
-  });
+  return reply.send({ ok: true, images, pagination: { totalCount, totalPages, page: p, limit: l } });
 });
 
-// Delete image (corrected to use `images` table)
+// Delete image with optional instant deletion
 fastify.delete('/images/:id', async (req, reply) => {
   const user = req.user;
   const imageId = req.params.id;
+  const { instant_delete } = req.query;
 
   try {
     const { rows } = await pool.query(`SELECT * FROM images WHERE id = $1 AND user_id = $2`, [imageId, user.id]);
     if (!rows.length) return reply.code(404).send({ error: 'Image not found' });
     const img = rows[0];
 
-    // Delete from images table
+    const bucketId = img.is_private ? B2_PRIVATE_BUCKET_ID : B2_PUBLIC_BUCKET_ID;
+
     await pool.query(`DELETE FROM images WHERE id = $1 AND user_id = $2`, [imageId, user.id]);
 
-    // Optionally mark for deletion table
-    const expire_at = new Date(Date.now() + 7 * 24 * 3600 * 1000);
+    const expire_at = instant_delete === 'true' ? null : new Date(Date.now() + 7 * 24 * 3600 * 1000);
+
     await pool.query(
       `INSERT INTO files_to_delete (user_id, bucket_id, file_name, url, path, is_private, b2_file_id, expire_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [user.id, img.bucket_id, img.filename, img.url, `${user.id}/${img.filename}`, img.is_private, img.b2_file_id, expire_at]
+      [user.id, bucketId, img.filename, img.url, `${user.id}/${img.filename}`, img.is_private, img.b2_file_id || null, expire_at]
     );
 
     return reply.send({ ok: true, message: 'Image deleted successfully' });
@@ -195,13 +219,13 @@ fastify.delete('/images/:id', async (req, reply) => {
   }
 });
 
-// Get private token URL
+// Private token URL with renewable system
 fastify.get('/images/:id/token', async (req, reply) => {
   const user = req.user;
   const { id } = req.params;
-  let expireSeconds = parseInt(req.query.expire_seconds || '3600', 10);
-  if (isNaN(expireSeconds) || expireSeconds <= 0) expireSeconds = 3600;
-  if (expireSeconds > 7 * 24 * 3600) expireSeconds = 7 * 24 * 3600;
+  let { expire_days = 7 } = req.query;
+  expire_days = Math.min(Number(expire_days), 365); // Max user-requested 1 year
+  if (isNaN(expire_days) || expire_days <= 0) expire_days = 7;
 
   const res = await pool.query('SELECT filename, is_private FROM images WHERE id = $1 AND user_id = $2', [id, user.id]);
   if (!res.rows.length) return reply.code(404).send({ error: 'Image not found' });
@@ -213,11 +237,43 @@ fastify.get('/images/:id/token', async (req, reply) => {
   }
 
   await initB2();
-  const url = await buildPrivateDownloadUrl(B2_PRIVATE_BUCKET_ID, B2_PRIVATE_BUCKET_NAME, user.domain, `${user.id}/${img.filename}`, expireSeconds);
-  return reply.send({ ok: true, url, is_private: true, expire_seconds: expireSeconds });
+  const requestedExpireAt = new Date(Date.now() + expire_days * 24 * 3600 * 1000);
+
+  const urlRes = await pool.query('SELECT * FROM private_urls WHERE user_id=$1 AND file_id=$2 LIMIT 1', [user.id, id]);
+  let privateUrl;
+
+  if (urlRes.rows.length) {
+    const row = urlRes.rows[0];
+    const now = new Date();
+    if (!row.b2_token || new Date(row.b2_token_expires_at) < now) {
+      // Renew B2 token
+      const tokenUrl = await buildPrivateDownloadUrl(B2_PRIVATE_BUCKET_ID, B2_PRIVATE_BUCKET_NAME, user.domain, `${user.id}/${img.filename}`, 7 * 24 * 3600);
+      await pool.query('UPDATE private_urls SET b2_token=$1, b2_token_expires_at=$2, requested_expire_at=$3 WHERE id=$4', [
+        tokenUrl.split('?')[1],
+        new Date(Date.now() + 7 * 24 * 3600 * 1000),
+        requestedExpireAt,
+        row.id
+      ]);
+      privateUrl = tokenUrl;
+    } else {
+      privateUrl = `${b2Client.downloadUrl}/${B2_PRIVATE_BUCKET_NAME}/${encodeURIComponent(user.id + '/' + img.filename)}?${row.b2_token}`;
+      // Update requested expire if user requested more
+      if (requestedExpireAt > new Date(row.requested_expire_at)) {
+        await pool.query('UPDATE private_urls SET requested_expire_at=$1 WHERE id=$2', [requestedExpireAt, row.id]);
+      }
+    }
+  } else {
+    const tokenUrl = await buildPrivateDownloadUrl(B2_PRIVATE_BUCKET_ID, B2_PRIVATE_BUCKET_NAME, user.domain, `${user.id}/${img.filename}`, 7 * 24 * 3600);
+    await pool.query('INSERT INTO private_urls (user_id, file_id, requested_expire_at, b2_token, b2_token_expires_at, created_at) VALUES ($1,$2,$3,$4,$5,now())', [
+      user.id, id, requestedExpireAt, tokenUrl.split('?')[1], new Date(Date.now() + 7 * 24 * 3600 * 1000)
+    ]);
+    privateUrl = tokenUrl;
+  }
+
+  return reply.send({ ok: true, url: privateUrl, requested_expire_at: requestedExpireAt });
 });
 
-// --- Start server ---
+// Start server
 (async () => {
   try {
     await initB2();

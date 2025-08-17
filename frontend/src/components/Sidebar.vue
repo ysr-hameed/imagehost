@@ -17,9 +17,9 @@
         <span v-if="!collapsed">Explore</span>
       </router-link>
 
-      <router-link to="/docs" @click="handleLinkClick">
+      <router-link to="/files" @click="handleLinkClick">
         <BookOpen :size="20" />
-        <span v-if="!collapsed">Docs</span>
+        <span v-if="!collapsed">Files</span>
       </router-link>
     </nav>
 

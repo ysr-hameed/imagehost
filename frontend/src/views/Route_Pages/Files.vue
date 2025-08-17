@@ -1,282 +1,139 @@
 <template>
   <div class="fm-wrap">
-    <!-- Top bar -->
+    <!-- Top Bar -->
     <div class="fm-topbar">
-      <div class="left">
-        <h2 class="fm-title">My Images</h2>
-        <div class="breadcrumbs">
-          <button class="crumb" :class="{ active: currentPath.length === 0 }" @click="goRoot">Root</button>
-          <template v-for="(seg, i) in currentPath" :key="i">
-            <span class="crumb-sep">/</span>
-            <button class="crumb" :class="{ active: i === currentPath.length - 1 }" @click="goToIndex(i)">
-              {{ seg }}
-            </button>
-          </template>
-        </div>
-      </div>
-
-      <div class="right">
-        <div class="input-with-icon">
-          <input
-            class="fm-input"
-            type="text"
-            v-model.trim="q"
-            placeholder="Search filename, description…"
-            @keydown.enter.prevent="applySearch"
-          />
-          <button class="btn btn-outline small" @click="applySearch">Search</button>
-        </div>
-
-        <select class="fm-select" v-model="sortBy">
+      <h1 class="fm-title">My Images</h1>
+      <div class="controls">
+        <input v-model="q" @keyup.enter="applySearch" placeholder="Search by filename..." class="fm-input" />
+        <select v-model="sortBy" @change="refresh" class="fm-select">
           <option value="created_at_desc">Newest</option>
           <option value="created_at_asc">Oldest</option>
-          <option value="name_asc">Name A–Z</option>
-          <option value="name_desc">Name Z–A</option>
           <option value="size_desc">Largest</option>
           <option value="size_asc">Smallest</option>
         </select>
-
-        <div class="view-toggle">
-          <button class="btn btn-outline small" :class="{ active: viewMode === 'grid' }" @click="viewMode='grid'">Grid</button>
-          <button class="btn btn-outline small" :class="{ active: viewMode === 'list' }" @click="viewMode='list'">List</button>
-        </div>
-
-        <button class="btn btn-primary" @click="refresh" :disabled="loading">
-          {{ loading ? 'Loading…' : 'Refresh' }}
-        </button>
+        <button @click="refresh" class="fm-button">Refresh</button>
       </div>
     </div>
 
-    <!-- Content area -->
-    <div class="fm-content" v-if="!loading && !error">
-      <!-- Folders -->
-      <div v-if="foldersInView.length" class="folder-row">
-        <button
-          v-for="f in foldersInView"
-          :key="f.key"
-          class="folder-card"
-          @click="enterFolder(f.name)"
-          title="Open folder"
-        >
-          <div class="folder-icon">📁</div>
-          <div class="folder-meta">
-            <div class="folder-name">{{ f.name }}</div>
-            <div class="folder-count">{{ f.count }} item{{ f.count === 1 ? '' : 's' }}</div>
-          </div>
-        </button>
-      </div>
+    <!-- Loader / Error -->
+    <div v-if="loading" class="fm-message">Loading...</div>
+    <div v-if="error" class="fm-error">{{ error }}</div>
 
-      <!-- Files -->
-      <div v-if="itemsInView.length" :class="['files', viewMode]">
-        <div v-for="img in itemsInView" :key="img.id" :class="['file-card', { selected: selectedIds.has(img.id) }]">
-          <label class="select-box">
-            <input type="checkbox" :checked="selectedIds.has(img.id)" @change="toggleSelected(img.id)" />
-          </label>
-
-          <div class="thumb" @click="openPreview(img)">
-            <img :src="img.url" :alt="img.filename" loading="lazy" />
-            <span class="badge" :class="img.is_private ? 'badge-private' : 'badge-public'">
-              {{ img.is_private ? 'Private' : 'Public' }}
-            </span>
-          </div>
-
-          <div class="meta">
-            <div class="name" :title="img.filename">{{ img.filename }}</div>
-            <div class="sub">
-              <span>{{ formatSize(img.size) }}</span> •
-              <span>{{ formatDate(img.created_at) }}</span>
-            </div>
-            <div class="desc" v-if="img.description">{{ img.description }}</div>
-          </div>
-
-          <div class="row-actions">
-            <button class="btn btn-outline tiny" @click="copy(img.url)">Copy URL</button>
-            <button v-if="img.is_private" class="btn btn-outline tiny" @click="openToken(img)">Token URL</button>
-            <button class="btn btn-danger tiny" @click="confirmDelete(img)">Delete</button>
+    <!-- Images Grid -->
+    <div v-if="images.length" class="fm-grid">
+      <div v-for="img in images" :key="img.id" class="fm-item">
+        <img :src="img.url" @click="openPreview(img)" class="fm-img"/>
+        <div class="info">
+          <div class="filename">{{ img.filename }}</div>
+          <div class="size">{{ formatSize(img.size) }}</div>
+          <div class="actions">
+            <button @click="toggleSelected(img.id)" class="icon-btn">
+              <svg v-if="selectedIds.has(img.id)" xmlns="http://www.w3.org/2000/svg" class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+              </svg>
+              <svg v-else xmlns="http://www.w3.org/2000/svg" class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+              </svg>
+            </button>
+            <button @click="confirmDelete(img)" class="icon-btn delete">
+              <svg xmlns="http://www.w3.org/2000/svg" class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
+            <button @click="openToken(img)" class="icon-btn token">
+              <svg xmlns="http://www.w3.org/2000/svg" class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+            </button>
           </div>
         </div>
       </div>
-
-      <div v-else class="empty">
-        <p>No images here. Try another folder or refresh.</p>
-      </div>
     </div>
+    <div v-else-if="!loading" class="fm-message">No images found.</div>
 
-    <div v-if="error" class="error-box">
-      <p>{{ error }}</p>
-      <button class="btn btn-outline" @click="refresh">Retry</button>
-    </div>
-
-    <div v-if="loading" class="loading-box">
-      <div class="spinner"></div>
-      <div class="muted">Loading images…</div>
+    <!-- Pagination -->
+    <div v-if="totalPages>1" class="fm-pagination">
+      <button @click="prevPage" :disabled="page<=1" class="fm-button-small">Prev</button>
+      <span>Page {{ page }} / {{ totalPages }}</span>
+      <button @click="nextPage" :disabled="page>=totalPages" class="fm-button-small">Next</button>
     </div>
 
     <!-- Preview Modal -->
-    <div v-if="preview" class="modal">
-      <div class="modal-card">
-        <div class="modal-head">
-          <div class="mh-left">
-            <h3 class="modal-title" :title="preview.filename">{{ preview.filename }}</h3>
-            <div class="mh-sub">
-              <span>{{ formatSize(preview.size) }}</span> •
-              <span>{{ formatDate(preview.created_at) }}</span> •
-              <span class="badge" :class="preview.is_private ? 'badge-private' : 'badge-public'">
-                {{ preview.is_private ? 'Private' : 'Public' }}
-              </span>
-            </div>
-          </div>
-          <div class="mh-right">
-            <button class="btn btn-outline small" @click="copy(preview.url)">Copy URL</button>
-            <button v-if="preview.is_private" class="btn btn-outline small" @click="openToken(preview)">Token URL</button>
-            <button class="btn btn-danger small" @click="confirmDelete(preview)">Delete</button>
-            <button class="btn btn-secondary small" @click="closePreview">Close</button>
-          </div>
-        </div>
-
-        <div class="modal-body">
-          <div class="img-wrap">
-            <img :src="preview.url" :alt="preview.filename" />
-          </div>
-          <div class="info">
-            <div class="info-row"><span>Filename</span><b>{{ preview.filename }}</b></div>
-            <div class="info-row" v-if="preview.original_filename"><span>Original</span><b>{{ preview.original_filename }}</b></div>
-            <div class="info-row"><span>Type</span><b>{{ preview.contentType || preview.content_type || 'image' }}</b></div>
-            <div class="info-row"><span>Size</span><b>{{ formatSize(preview.size) }}</b></div>
-            <div class="info-row"><span>Created</span><b>{{ formatDate(preview.created_at) }}</b></div>
-            <div class="info-row" v-if="preview.description"><span>Description</span><b>{{ preview.description }}</b></div>
-            <div class="info-row"><span>URL</span><b class="mono">{{ preview.url }}</b></div>
-          </div>
-        </div>
+    <div v-if="preview" class="fm-modal">
+      <div class="fm-modal-content">
+        <img :src="preview.url" class="fm-modal-img"/>
+        <button @click="closePreview" class="fm-modal-close">✕</button>
       </div>
     </div>
 
     <!-- Token Modal -->
-    <div v-if="tokenTarget" class="modal">
-      <div class="modal-card small">
-        <div class="modal-head">
-          <h3 class="modal-title">Generate Private Token URL</h3>
-          <button class="btn btn-secondary small" @click="tokenTarget = null">Close</button>
+    <div v-if="tokenTarget" class="fm-modal">
+      <div class="fm-modal-content small">
+        <h2>Generate Token for {{ tokenTarget.filename }}</h2>
+        <div class="token-controls">
+          <input type="number" v-model.number="tokenValue"/>
+          <select v-model="tokenUnit">
+            <option value="minutes">Minutes</option>
+            <option value="hours">Hours</option>
+            <option value="days">Days</option>
+            <option value="months">Months</option>
+            <option value="years">Years</option>
+          </select>
         </div>
-        <div class="modal-body">
-          <div class="grid-2">
-            <label class="field">
-              <span>Custom Expiry</span>
-              <input type="number" min="1" v-model.number="tokenValue" />
-            </label>
-            <label class="field">
-              <span>Unit</span>
-              <select v-model="tokenUnit">
-                <option value="seconds">Seconds</option>
-                <option value="minutes">Minutes</option>
-                <option value="hours">Hours</option>
-                <option value="days">Days</option>
-                <option value="months">Months</option>
-                <option value="years">Years</option>
-              </select>
-            </label>
-          </div>
-
-          <p class="muted note">Max allowed by API is 7 days (604,800 seconds). Longer selections will be clamped.</p>
-
-          <div class="row">
-            <button class="btn btn-primary" @click="generateToken" :disabled="busy">Generate URL</button>
-          </div>
-
-          <div v-if="tokenUrl" class="token-result">
-            <div class="copy-row">
-              <input class="fm-input mono" type="text" :value="tokenUrl" readonly />
-              <button class="btn btn-outline small" @click="copy(tokenUrl)">Copy</button>
-            </div>
-            <div class="muted">Expires in ~ {{ effectiveSeconds }} seconds.</div>
-          </div>
+        <button @click="generateToken" :disabled="busy" class="fm-button">Generate</button>
+        <div v-if="tokenUrl" class="fm-token-url">
+          <a :href="tokenUrl" target="_blank">{{ tokenUrl }}</a>
         </div>
-      </div>
-    </div>
-
-    <!-- Confirm Delete -->
-    <div v-if="toDelete" class="modal">
-      <div class="modal-card small">
-        <div class="modal-head">
-          <h3 class="modal-title">Delete Image</h3>
-        </div>
-        <div class="modal-body">
-          <p>Are you sure you want to delete <b>{{ toDelete.filename }}</b>?</p>
-          <div class="row gap">
-            <button class="btn btn-danger" @click="doDelete" :disabled="busy">Delete</button>
-            <button class="btn btn-secondary" @click="toDelete=null">Cancel</button>
-          </div>
-        </div>
+        <button @click="tokenTarget=null" class="fm-modal-close">✕</button>
       </div>
     </div>
 
     <!-- Toast -->
-    <div v-if="toast.text" class="toast" :class="toast.kind">{{ toast.text }}</div>
+    <div v-if="toast.text" :class="['fm-toast', toast.kind==='success'?'success':'error']">{{ toast.text }}</div>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import axios from 'axios'
-import { getApiKeys } from "@/api/apiKey"; // <-- your API key fetch
+import { getApiKeys } from "@/api/apiKey"
 
-const apiBase = ref(import.meta.env.VITE_USER_API_BASE || 'http://localhost:4000')
 const apiKey = ref('')
-
 const loading = ref(false)
 const error = ref('')
 const images = ref([])
-const viewMode = ref('grid')
 const q = ref('')
 const sortBy = ref('created_at_desc')
-const currentPath = ref([])
+const page = ref(1)
+const limit = ref(20)
+const totalPages = ref(1)
 const selectedIds = ref(new Set())
 const preview = ref(null)
-const toDelete = ref(null)
 const busy = ref(false)
 const tokenTarget = ref(null)
 const tokenValue = ref(1)
 const tokenUnit = ref('days')
 const tokenUrl = ref('')
-const effectiveSeconds = ref(0)
-const toast = ref({ text: '', kind: '' })
+const toast = ref({ text:'', kind:'' })
 let toastTimer = null
+const apiBase = ref(import.meta.env.VITE_USER_API_BASE || 'http://localhost:4000')
 
-// Axios instance with internal header
-const client = computed(() =>
-  axios.create({
-    baseURL: apiBase.value,
-    headers: {
-      'x-api-key': apiKey.value,
-      'x-internal': '1'
-    }
-  })
-)
-
-function showToast(text, kind='success', ms=2000) {
-  toast.value = { text, kind }
+// Helpers
+function showToast(text, kind='success', ms=2500){
+  toast.value={text,kind}
   clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => toast.value = { text:'', kind:'' }, ms)
+  toastTimer=setTimeout(()=>toast.value={text:'',kind:''}, ms)
 }
-
-// Format helpers
-function formatSize(bytes) {
-  if (bytes === undefined || bytes === null) return ''
-  const units = ['B','KB','MB','GB','TB']
-  let i = 0, n = bytes
-  while(n >= 1024 && i < units.length - 1){ n /= 1024; i++ }
-  return n.toFixed(2) + ' ' + units[i]
+function formatSize(bytes){
+  if(!bytes) return ''
+  const units=['B','KB','MB','GB','TB']
+  let i=0,n=bytes
+  while(n>=1024 && i<units.length-1){n/=1024;i++}
+  return n.toFixed(2)+' '+units[i]
 }
-
-function formatDate(s) {
-  try { return new Date(s).toLocaleString() }
-  catch { return s }
-}
-
-// Token helpers
-function clampTokenSeconds(sec){ const max=604800; if(sec<=0) return 3600; return Math.min(sec,max) }
-function toSeconds(val,unit){ 
-  const v = Number(val||0); 
+function clampTokenSeconds(sec){ const max=604800; return sec<=0?3600:Math.min(sec,max) }
+function toSeconds(val,unit){
+  const v=Number(val||0)
   switch(unit){
     case 'minutes': return v*60
     case 'hours': return v*3600
@@ -287,190 +144,94 @@ function toSeconds(val,unit){
   }
 }
 
-const foldersInView = computed(() => images.value.filter(i => i.type === 'folder'))
-const itemsInView = computed(() => images.value.filter(i => i.type !== 'folder'))
+const client=computed(()=>axios.create({ baseURL: apiBase.value, headers:{'x-api-key':apiKey.value,'x-internal':'1'} }))
 
-// --- FETCH IMAGES WITH DEBUG ---
-async function fetchImages() {
-  if(!apiKey.value) return
-  loading.value = true
-  error.value = ''
-  selectedIds.value.clear()
-  try {
-    console.log('Fetching images from:', currentPath.value.join('/'))
-    const res = await client.value.get('/images', { 
-      params: { 
-        path: currentPath.value.join('/'), 
-        q: q.value, 
-        sort: sortBy.value 
-      } 
-    })
-    console.log('API response:', res.data)
-
-    if (!Array.isArray(res.data.images)) throw new Error('API did not return array')
-    images.value = res.data.images
-  } catch (e) {
-    console.error('Fetch images failed:', e)
-    error.value = 'Failed to fetch images. Check console for details.'
-  } finally {
-    loading.value = false
-  }
-}
-
-// --- FETCH API KEY FIRST ---
-const fetchApiKey = async () => {
-  loading.value = true
-  try {
+const fetchApiKey=async()=>{
+  loading.value=true
+  try{
     const { data } = await getApiKeys()
-    if (Array.isArray(data) && data.length > 0) {
-      const activeKey = data.find((k) => k.active) || data[0]
-      apiKey.value = activeKey.apiKey || activeKey.key || ''
-    } else if (data?.apiKey || data?.key) {
-      apiKey.value = data.apiKey || data.key
-    } else {
-      error.value = "No API keys found from server."
-    }
-  } catch (err) {
-    console.error('API key fetch error:', err)
-    error.value = err.response?.data?.message || "Failed to fetch API key."
-  } finally {
-    loading.value = false
-    if(apiKey.value) fetchImages() // fetch images after key is ready
-  }
+    if(Array.isArray(data) && data.length>0){ const active=data.find(k=>k.active)||data[0]; apiKey.value=active.apiKey||active.key||'' }
+    else if(data?.apiKey||data?.key) apiKey.value=data.apiKey||data.key
+    else error.value="No API keys found"
+  } catch(e){ error.value="Failed to fetch API key" }
+  finally{ loading.value=false; if(apiKey.value) fetchImages() }
 }
 
-// Search & refresh
-function applySearch(){ fetchImages() }
+const fetchImages=async()=>{
+  if(!apiKey.value) return
+  loading.value=true; error.value=''
+  try{
+    const res=await client.value.get('/images',{params:{page:page.value, limit:Number(limit.value), q:q.value, sort:sortBy.value}})
+    images.value=res.data.images||[]
+    totalPages.value=res.data.pagination?.totalPages||1
+  }catch(e){ error.value='Failed to fetch images'; console.error(e) }
+  finally{ loading.value=false }
+}
+
+function applySearch(){ page.value=1; fetchImages() }
 function refresh(){ fetchImages() }
-
-// Folder navigation
-function enterFolder(name){ currentPath.value.push(name); fetchImages() }
-function goRoot(){ currentPath.value = []; fetchImages() }
-function goToIndex(i){ currentPath.value = currentPath.value.slice(0,i+1); fetchImages() }
-
-// Selection
-function toggleSelected(id){ 
-  if(selectedIds.value.has(id)) selectedIds.value.delete(id)
-  else selectedIds.value.add(id)
+function prevPage(){ if(page.value>1){ page.value--; fetchImages() } }
+function nextPage(){ if(page.value<totalPages.value){ page.value++; fetchImages() } }
+function toggleSelected(id){ selectedIds.value.has(id)?selectedIds.value.delete(id):selectedIds.value.add(id) }
+function openPreview(img){ preview.value=img }
+function closePreview(){ preview.value=null }
+function confirmDelete(img){ if(confirm(`Delete ${img.filename}?`)) doDelete(img.id) }
+async function doDelete(id){
+  busy.value=true
+  try{ await client.value.delete('/images/'+id); showToast('Deleted successfully'); fetchImages() }
+  catch(e){ showToast('Delete failed','error'); console.error(e) }
+  finally{ busy.value=false }
 }
 
-// Preview modal
-function openPreview(img){ preview.value = img }
-function closePreview(){ preview.value = null }
-
-// Delete
-function confirmDelete(img){ toDelete.value = img }
-async function doDelete(){
-  if(!toDelete.value) return
-  busy.value = true
-  try {
-    console.log('Deleting image id:', toDelete.value.id)
-    await client.value.delete('/images/' + toDelete.value.id)
-    showToast('Deleted successfully')
-    fetchImages()
-    toDelete.value = null
-  } catch(e) {
-    console.error('Delete failed:', e)
-    showToast('Delete failed','error')
-  } finally {
-    busy.value = false
-  }
-}
-
-// Copy
-function copy(txt){ navigator.clipboard.writeText(txt); showToast('Copied!') }
-
-// Token
-function openToken(img){ 
-  tokenTarget.value = img
-  tokenUrl.value = ''
-  tokenValue.value = 1
-  tokenUnit.value = 'days'
-  effectiveSeconds.value = 0
-}
-
+function openToken(img){ tokenTarget.value=img; tokenUrl.value=''; tokenValue.value=1; tokenUnit.value='days' }
 async function generateToken(){
   if(!tokenTarget.value) return
-  busy.value = true
-  try {
-    const secs = clampTokenSeconds(toSeconds(tokenValue.value, tokenUnit.value))
-    console.log('Generating token for:', tokenTarget.value.id, 'seconds:', secs)
-    const res = await client.value.post('/images/' + tokenTarget.value.id + '/token', { seconds: secs })
-    console.log('Token response:', res.data)
-    tokenUrl.value = res.data.url
-    effectiveSeconds.value = secs
-  } catch(e) {
-    console.error('Token generation failed:', e)
-    showToast('Token generation failed','error')
-  } finally {
-    busy.value = false
-  }
+  busy.value=true
+  try{
+    const secs=clampTokenSeconds(toSeconds(tokenValue.value,tokenUnit.value))
+    const res=await client.value.get(`/images/${tokenTarget.value.id}/token`,{ params:{expire_seconds:secs} })
+    tokenUrl.value=res.data.url||''
+  }catch(e){ showToast('Token generation failed','error'); console.error(e) }
+  finally{ busy.value=false }
 }
 
-// --- INIT ---
-onMounted(fetchApiKey) // fetch key first
+onMounted(fetchApiKey)
 </script>
 
 <style scoped>
-:root {
-  --primary:#4f46e5; --secondary:#f3f4f6; --bg:#fff; --text:#111827; --muted:#6b7280;
-  --danger:#dc2626; --success:#16a34a; --border:#e5e7eb; --radius:.5rem; --shadow:0 4px 12px rgba(0,0,0,0.05);
-}
-
-.fm-wrap{ display:flex; flex-direction:column; padding:1rem; background:var(--bg); color:var(--text); min-height:100vh; box-sizing:border-box }
-.fm-topbar{ display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; flex-wrap:wrap }
-.fm-title{ font-size:1.5rem; font-weight:600 }
-.breadcrumbs{ display:flex; align-items:center; gap:.25rem; flex-wrap:wrap }
-.crumb{ background:var(--secondary); border-radius:var(--radius); padding:.25rem .5rem; font-size:.875rem; cursor:pointer; transition:background .2s }
-.crumb.active{ background:var(--primary); color:#fff }
-.crumb-sep{ font-weight:600 }
-.fm-input{ border:1px solid var(--border); border-radius:var(--radius); padding:.5rem; flex:1; min-width:150px }
-.fm-select{ border:1px solid var(--border); border-radius:var(--radius); padding:.4rem; margin-left:.5rem }
-.input-with-icon{ display:flex; align-items:center; gap:.5rem }
-.btn{ border:none; border-radius:var(--radius); padding:.4rem .75rem; cursor:pointer; font-size:.875rem; transition:all .2s }
-.btn-outline{ background:transparent; border:1px solid var(--border) }
-.btn-primary{ background:var(--primary); color:#fff }
-.btn-danger{ background:var(--danger); color:#fff }
-.btn-secondary{ background:var(--secondary); color:var(--text) }
-.btn.tiny, .btn.small{ padding:.25rem .5rem; font-size:.75rem }
-.files.grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:1rem }
-.files.list{ display:flex; flex-direction:column; gap:.75rem }
-.folder-row{ display:flex; flex-wrap:wrap; gap:1rem }
-.folder-card, .file-card{ background:var(--secondary); border-radius:var(--radius); box-shadow:var(--shadow); padding:.5rem; display:flex; flex-direction:column; cursor:pointer; transition:transform .2s,box-shadow .2s }
-.folder-card:hover, .file-card:hover{ transform:translateY(-2px); box-shadow:0 6px 16px rgba(0,0,0,0.1) }
-.folder-icon{ font-size:2rem; text-align:center; margin-bottom:.25rem }
-.folder-meta, .meta{text-align:center}
-.folder-name, .name{ font-weight:600; font-size:.9rem; margin-bottom:.25rem }
-.folder-count, .sub{ font-size:.75rem; color:var(--muted) }
-.thumb{ position:relative; margin-bottom:.5rem; border-radius:var(--radius); overflow:hidden }
-.thumb img{ width:100%; height:auto; display:block }
-.badge{ position:absolute; top:.25rem; right:.25rem; padding:.15rem .3rem; font-size:.7rem; border-radius:var(--radius); color:#fff }
-.badge-private{ background:var(--danger) }
-.badge-public{ background:var(--success) }
-.modal{ position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(17,24,39,.6); display:flex; align-items:center; justify-content: center; z-index:999; }
-.modal-card{ background:var(--bg); border-radius:var(--radius); max-width:600px; width:90%; max-height:90%; overflow-y:auto; padding:1rem; box-shadow:var(--shadow) }
-.modal-head{ display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem }
-.modal-title{ font-weight:600; font-size:1.2rem }
-.modal-body{ display:flex; flex-direction:column; gap:.5rem }
-.img-wrap img{ width:100%; border-radius:var(--radius); object-fit:contain }
-.info{ display:flex; flex-direction:column; gap:.25rem }
-.info-row{ display:flex; justify-content:space-between; font-size:.85rem }
-.mono{ font-family:monospace }
-.toast{ position:fixed; bottom:1rem; right:1rem; background:var(--primary); color:#fff; padding:.5rem 1rem; border-radius:var(--radius); box-shadow:var(--shadow); z-index:1000; transition:opacity .3s }
-.toast.success{ background:var(--success) }
-.toast.error{ background:var(--danger) }
-
-/* Responsive */
-@media (max-width:768px){
-  .fm-topbar{ flex-direction:column; align-items:flex-start; gap:.5rem }
-  .files.grid{ grid-template-columns:repeat(auto-fill,minmax(120px,1fr)) }
-  .modal-card{ width:95%; padding:.75rem }
-}
-
-@media (max-width:480px){
-  .files.grid{ grid-template-columns:repeat(auto-fill,minmax(100px,1fr)) }
-  .btn{ font-size:.75rem; padding:.25rem .5rem }
-  .fm-input{ min-width:100px }
-  .fm-select{ margin-left:0 }
-}
+.fm-wrap{padding:16px;font-family:sans-serif;background:#f9f9f9;min-height:100vh}
+.fm-topbar{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;margin-bottom:16px}
+.fm-title{font-size:24px;font-weight:bold;margin-bottom:8px}
+.controls{display:flex;gap:8px;flex-wrap:wrap}
+.fm-input{padding:6px 8px;border:1px solid #ccc;border-radius:4px}
+.fm-select{padding:6px 8px;border:1px solid #ccc;border-radius:4px}
+.fm-button{padding:6px 10px;background:#1976d2;color:#fff;border:none;border-radius:4px;cursor:pointer}
+.fm-button:hover{background:#1565c0}
+.fm-button-small{padding:4px 8px;background:#1976d2;color:#fff;border:none;border-radius:4px;cursor:pointer}
+.fm-button-small:disabled{opacity:0.5;cursor:not-allowed}
+.fm-message{text-align:center;color:#555;padding:8px}
+.fm-error{color:red;text-align:center;padding:8px}
+.fm-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.fm-item{background:#fff;border:1px solid #ddd;padding:8px;border-radius:4px;position:relative}
+.fm-img{width:100%;height:120px;object-fit:cover;cursor:pointer;border-radius:4px}
+.info{margin-top:6px}
+.filename{font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.size{font-size:12px;color:#666;margin-top:2px}
+.actions{display:flex;gap:4px;margin-top:4px}
+.icon-btn{border:none;background:none;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.icon-btn.delete{color:red}
+.icon-btn.token{color:green}
+.icon{width:16px;height:16px}
+.fm-pagination{display:flex;justify-content:center;align-items:center;gap:8px;margin-top:16px}
+.fm-modal{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);display:flex;justify-content:center;align-items:center;z-index:50}
+.fm-modal-content{background:#fff;padding:16px;border-radius:6px;position:relative;max-width:600px;width:90%}
+.fm-modal-content.small{max-width:400px}
+.fm-modal-img{width:100%;height:auto;border-radius:4px}
+.fm-modal-close{position:absolute;top:8px;right:8px;border:none;background:none;font-size:18px;cursor:pointer}
+.token-controls{display:flex;gap:6px;margin-bottom:8px}
+.token-controls input, .token-controls select{flex:1;padding:4px 6px;border:1px solid #ccc;border-radius:4px}
+.fm-token-url{word-break:break-all;background:#f1f1f1;padding:6px;border-radius:4px;margin-top:6px}
+.fm-toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);padding:8px 16px;border-radius:4px;color:#fff;z-index:60}
+.fm-toast.success{background:#4caf50}
+.fm-toast.error{background:#f44336}
 </style>
